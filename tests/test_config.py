@@ -40,6 +40,7 @@ def test_load_project_config():
     if config_path.exists():
         config = Config.load(config_path)
         assert config.device_mode in ("auto", "cpu", "cuda", "tensorrt")
+        assert config.get("analysis", "rally", "no_crossing_timeout_seconds") == 2.0
 
 
 def test_resolve_project_path_supports_root_fallback(tmp_path):

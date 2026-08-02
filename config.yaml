@@ -110,6 +110,8 @@ analysis:
     turning_min_displacement: 5.0
     # 回合间隔超时 (帧数, 超过则判定回合结束)
     rally_timeout_frames: 60
+    # 无跨区超时 (秒, 可由用户在分析入口覆盖, 范围 0.5-10.0)
+    no_crossing_timeout_seconds: 2.0
   # 误检过滤
   filter:
     # 最小人体检测置信度

@@ -1,0 +1,131 @@
+# ============================
+# PingPong AI Analyst 配置文件
+# ============================
+
+# 设备配置
+device:
+  # 自动检测: auto / cpu / mps / cuda / tensorrt
+  # Apple Silicon macOS 自动使用 MPS；服务器 T4 使用 tensorrt/cuda
+  mode: auto
+  # GPU显存限制比例 (0-1), 防止OOM
+  gpu_memory_fraction: 0.8
+  # 可见GPU设备
+  cuda_visible_devices: "0"
+
+# 模型配置
+models:
+  # YOLO-Pose 人体姿态估计
+  yolo_pose:
+    # 模型权重路径 (相对于项目根目录)
+    weights: yolo11s-pose.pt
+    # 可选普通检测方案（已从 YOLO_Trainer 复用到 models/yolov8s.pt）：
+    # weights: models/yolov8s.pt
+    # task: detect
+    # 输入尺寸
+    imgsz: 640
+    # 置信度阈值
+    conf: 0.25
+    # IOU阈值
+    iou: 0.45
+    # TensorRT engine路径 (服务器用)
+    engine: models/yolo11s-pose.engine
+    # 半精度推理
+    half: true
+
+  # MediaPipe Pose Landmarker
+  mediapipe_pose:
+    model: pose_landmarker_heavy
+    num_poses: 2
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    # 是否启用 (服务器流水线并行时可关闭以省显存)
+    enabled: true
+
+  # TrackNet 小球追踪
+  tracknet:
+    # V2 或 V3；V3默认兼容公开 TrackNetV3_TableTennis 权重
+    version: v3
+    # TrackNetV3 checkpoint，来自 TrackNetV3_TableTennis
+    weights: models/TrackNet_best.pt
+    # TensorRT engine
+    engine: models/TrackNetV3.engine
+    # 公开 V3 权重的输入尺寸
+    input_width: 512
+    input_height: 288
+    # checkpoint 参数: seq_len=8, bg_mode=concat
+    temporal_frames: 8
+    # 3通道中值背景 + 8帧RGB = 27通道
+    background_mode: concat
+    input_channels: 27
+    output_channels: 8
+    # 全局背景采样帧数；离线/实时视频入口会先生成中值背景
+    background_samples: 180
+    # 与公开 TrackNetV3 推理脚本一致的热力图阈值
+    peak_threshold: 0.5
+    half: true
+
+  # 用户标注微调产生的 TrackNet 版本；不会自动替换 base 权重。
+  tracknet_adaptation:
+    annotation_dir: data/tracknet_annotations
+    registry_dir: models/runs
+    min_positive_annotations: 12
+    recommended_positive_annotations: 30
+    recommended_absent_annotations: 10
+    epochs: 5
+    batch_size: 1
+    learning_rate: 0.0001
+    validation_fraction: 0.2
+    heatmap_sigma: 2.0
+
+# 分析配置
+analysis:
+  # 帧采样间隔 (每N帧处理一次, 降低计算量)
+  frame_stride: 1
+  # 回合检测
+  rally:
+    # 最小板数阈值 (>=N板才剪辑)
+    min_boards: 6
+    # 球速阈值 (px/frame), 低于此视为静止
+    ball_speed_threshold: 2.0
+    # 折返点检测窗口大小
+    turning_point_window: 5
+    # 击球动作匹配时间窗口 (帧)
+    hit_match_window: 10
+    # 球台标定: 四点顺序为图像中的左上、右上、右下、左下；留空时使用原图坐标
+    table:
+      corners: null
+      turning_min_displacement: 0.02
+      # 仅在已标定时生效，越大越严格要求折返点靠近球台两端
+      player_side_margin: 0.15
+    # 未标定时使用像素坐标
+    turning_min_displacement: 5.0
+    # 回合间隔超时 (帧数, 超过则判定回合结束)
+    rally_timeout_frames: 60
+  # 误检过滤
+  filter:
+    # 最小人体检测置信度
+    min_person_conf: 0.3
+    # 捡球动作过滤 (弯腰持续帧数)
+    pickup_duration_threshold: 15
+
+# 视频处理配置
+video:
+  # 解码后端: ffmpeg / av / opencv
+  decoder: av
+  # 剪辑模式: stream_copy (无损快速) / reencode
+  clip_mode: stream_copy
+  # 输出格式
+  output_format: mp4
+  # 输出编码 (stream_copy时忽略)
+  output_codec: libx264
+  # 输出目录
+  output_dir: output/clips
+  # 片段前后缓冲 (秒)
+  clip_buffer_before: 0.5
+  clip_buffer_after: 0.5
+
+# 日志配置
+logging:
+  level: INFO
+  file: logs/pingpong.log
+  rotation: "10 MB"

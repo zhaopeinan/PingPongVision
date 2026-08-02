@@ -21,8 +21,13 @@ def masked_heatmap_loss(
     predictions: torch.Tensor,
     targets: torch.Tensor,
     target_mask: torch.Tensor,
+    positive_weight: float = 20.0,
 ) -> torch.Tensor:
-    """Compute MSE only for explicitly labelled temporal output frames."""
+    """Compute foreground-weighted MSE for explicitly labelled output frames.
+
+    TrackNet heatmaps are mostly zero pixels. Weighting the Gaussian ball peak
+    keeps an all-background prediction from looking artificially excellent.
+    """
     if predictions.shape != targets.shape:
         raise ValueError(f"预测和目标形状不一致: {predictions.shape} != {targets.shape}")
     mask = target_mask.to(device=predictions.device, dtype=predictions.dtype)
@@ -31,7 +36,8 @@ def masked_heatmap_loss(
     if mask.shape != predictions.shape[:2]:
         raise ValueError("target_mask 必须是 [batch, temporal_frames]")
     mask = mask[:, :, None, None]
-    squared_error = (predictions - targets) ** 2 * mask
+    pixel_weight = 1.0 + max(0.0, float(positive_weight) - 1.0) * targets.clamp(0.0, 1.0)
+    squared_error = (predictions - targets) ** 2 * pixel_weight * mask
     denominator = mask.sum() * predictions.shape[-1] * predictions.shape[-2]
     if denominator.item() == 0:
         return predictions.sum() * 0.0
@@ -150,6 +156,7 @@ class TrackNetFineTuner:
             lr=float(self.config.get("learning_rate", 1e-4)),
         )
         epochs = max(1, int(self.config.get("epochs", 5)))
+        positive_weight = float(self.config.get("heatmap_positive_weight", 20.0))
         best_loss = float("inf")
         best_metrics: dict = {}
         self._notify(progress_callback, {"status": "running", "epoch": 0, "epochs": epochs, "device": str(device)})
@@ -168,12 +175,19 @@ class TrackNetFineTuner:
                     predictions,
                     targets.float().to(device),
                     masks.float().to(device),
+                    positive_weight=positive_weight,
                 )
                 loss.backward()
                 optimizer.step()
                 train_losses.append(float(loss.detach().cpu()))
 
-            metrics = self._evaluate(model, validation_loader, device, validation_dataset)
+            metrics = self._evaluate(
+                model,
+                validation_loader,
+                device,
+                validation_dataset,
+                positive_weight=positive_weight,
+            )
             metrics.update({"train_loss": float(np.mean(train_losses)) if train_losses else 0.0, "epoch": epoch})
             self._notify(progress_callback, {"status": "running", "epoch": epoch, "epochs": epochs, **metrics})
             if metrics["validation_loss"] < best_loss:
@@ -210,7 +224,7 @@ class TrackNetFineTuner:
         return result
 
     @staticmethod
-    def _evaluate(model, loader, device, dataset) -> dict:
+    def _evaluate(model, loader, device, dataset, positive_weight: float = 20.0) -> dict:
         model.eval()
         losses: list[float] = []
         positive_hits = 0
@@ -219,7 +233,12 @@ class TrackNetFineTuner:
         with torch.no_grad():
             for inputs, targets, masks, metadata in loader:
                 predictions = model(inputs.float().to(device))
-                loss = masked_heatmap_loss(predictions, targets.float().to(device), masks.float().to(device))
+                loss = masked_heatmap_loss(
+                    predictions,
+                    targets.float().to(device),
+                    masks.float().to(device),
+                    positive_weight=positive_weight,
+                )
                 losses.append(float(loss.cpu()))
                 labels = metadata["label"]
                 if isinstance(labels, str):

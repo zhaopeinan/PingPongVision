@@ -156,6 +156,21 @@ def test_masked_heatmap_loss_ignores_unlabeled_outputs():
     assert abs(float(loss) - 0.25) < 1e-6
 
 
+def test_masked_heatmap_loss_weights_ball_peak():
+    import torch
+
+    predictions = torch.zeros((1, 8, 4, 4), dtype=torch.float32)
+    targets = torch.zeros_like(predictions)
+    masks = torch.zeros((1, 8), dtype=torch.float32)
+    masks[0, 7] = 1
+    targets[0, 7, 2, 2] = 1.0
+
+    loss = masked_heatmap_loss(predictions, targets, masks, positive_weight=20.0)
+
+    assert float(loss) > 0.0
+    assert abs(float(loss) - 20.0 / 16.0) < 1e-6
+
+
 def test_tracknet_registry_keeps_base_and_saves_run(tmp_path):
     base_path = tmp_path / "TrackNet_best.pt"
     base_path.write_bytes(b"base")

@@ -590,7 +590,11 @@ function pollTracknetTraining(jobId) {
       $("tracknetTrainingProgressText").textContent = progress + "%";
       $("tracknetTrainingStatus").textContent = data.message || data.status;
       if (data.metrics?.validation_loss !== undefined) {
-        $("tracknetTrainingMetrics").textContent = `验证损失 ${Number(data.metrics.validation_loss).toFixed(4)} · 检测率 ${(Number(data.metrics.positive_detection_rate || 0) * 100).toFixed(0)}%`;
+        const validationLoss = Number(data.metrics.validation_loss);
+        const lossText = Math.abs(validationLoss) < 0.001
+          ? validationLoss.toExponential(3)
+          : validationLoss.toFixed(4);
+        $("tracknetTrainingMetrics").textContent = `验证损失 ${lossText} · 检测率 ${(Number(data.metrics.positive_detection_rate || 0) * 100).toFixed(0)}%`;
       }
       if (["completed", "failed", "cancelled", "discarded", "saved"].includes(data.status)) {
         clearInterval(state.trainingPollTimer);

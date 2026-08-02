@@ -235,7 +235,9 @@ class TrackingVisualizer:
             self._hit_flash_frames = 8  # 闪光持续8帧
             self._board_count += len(hit_events)
 
-        self.rally_detector.update(frame_data, hit_events)
+        completed_segment = self.rally_detector.update(frame_data, hit_events)
+        if completed_segment is not None and self._tracknet is not None:
+            self._tracknet.notify_rally_end()
 
         # 5. 绘制叠加层
         if self._hit_flash_frames > 0:

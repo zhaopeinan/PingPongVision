@@ -181,7 +181,9 @@ class VideoAnalyzer:
                 hit_events = self.aligner.match_hit_events(require_persons=False)
 
             # 回合检测状态机
-            self.rally_detector.update(frame_data, hit_events)
+            completed_segment = self.rally_detector.update(frame_data, hit_events)
+            if completed_segment is not None:
+                self._tracknet.notify_rally_end()
 
             frame_idx += 1
             pbar.update(1)

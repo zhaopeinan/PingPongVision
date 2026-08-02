@@ -224,3 +224,51 @@ def test_tracknet_heatmap_selects_last_frame_and_scales_coordinates(cpu_device):
     assert position is not None
     assert abs(position[0] - 10.0) < 1.0
     assert abs(position[1] - 4.0) < 1.0
+
+
+def test_tracknet_center_region_rejects_outside_candidate(cpu_device):
+    """回合进行中优先只接受两名选手之间的中间走廊候选。"""
+    tracker = TrackNetTracker(
+        cpu_device,
+        {"peak_threshold": 0.3, "center_region": {"x_min": 0.25, "x_max": 0.75, "y_min": 0.1, "y_max": 0.9}},
+    )
+    tracker._loaded = True
+    tracker._backend = "pytorch"
+
+    heatmap = np.zeros((1, 1, 10, 10), dtype=np.float32)
+    heatmap[0, 0, 5, 1] = 1.0  # 画面左侧的强误检
+    heatmap[0, 0, 5, 5] = 0.6  # 中间区域的真实候选
+    tracker.infer = lambda frame: heatmap
+
+    position = tracker.detect_ball_position(np.zeros((100, 100, 3), dtype=np.uint8))
+
+    assert position is not None
+    assert 25 <= position[0] <= 75
+
+
+def test_tracknet_allows_outside_candidate_after_rally_end(cpu_device):
+    """只有回合结束通知后的恢复窗口允许球离开中间走廊。"""
+    tracker = TrackNetTracker(
+        cpu_device,
+        {
+            "peak_threshold": 0.3,
+            "center_region": {
+                "x_min": 0.25,
+                "x_max": 0.75,
+                "y_min": 0.1,
+                "y_max": 0.9,
+                "outside_after_rally_frames": 1,
+            },
+        },
+    )
+    tracker._loaded = True
+    tracker._backend = "pytorch"
+    heatmap = np.zeros((1, 1, 10, 10), dtype=np.float32)
+    heatmap[0, 0, 5, 1] = 1.0
+    tracker.infer = lambda frame: heatmap
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    assert tracker.detect_ball_position(frame) is None
+    tracker.notify_rally_end()
+    assert tracker.detect_ball_position(frame) is not None
+    assert tracker.detect_ball_position(frame) is None

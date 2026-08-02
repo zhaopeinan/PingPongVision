@@ -31,6 +31,21 @@ class TrackNetTracker(BaseModelWrapper):
         self._frame_buffer: deque[np.ndarray] = deque(maxlen=self.temporal_frames)
         self._background_frame: np.ndarray | None = None
         self._prev_ball_pos: tuple[float, float] | None = None
+        # 比赛中球绝大多数时间位于两名选手之间。用归一化区域做候选
+        # 过滤，避免把地面、灯光和场边白色物体当成球。
+        center_region = config.get("center_region", {}) or {}
+        self._center_region = {
+            "x_min": float(center_region.get("x_min", 0.25)),
+            "x_max": float(center_region.get("x_max", 0.75)),
+            "y_min": float(center_region.get("y_min", 0.10)),
+            "y_max": float(center_region.get("y_max", 0.90)),
+            "enabled": bool(center_region.get("enabled", True)),
+            "outside_after_rally_frames": max(
+                0, int(center_region.get("outside_after_rally_frames", 30))
+            ),
+        }
+        self._outside_recovery_frames = 0
+        self._allow_outside_current = False
 
     def _get_preprocessor(self) -> TrackNetPreprocessor:
         return TrackNetPreprocessor(
@@ -273,6 +288,27 @@ class TrackNetTracker(BaseModelWrapper):
         self._frame_buffer.clear()
         logger.info("TrackNet CV回退模式: 帧差法+亮度+轨迹跟踪")
 
+    def notify_rally_end(self) -> None:
+        """在回合结束后短暂允许球出现在中间走廊之外。"""
+        if not self._center_region["enabled"]:
+            return
+        self._outside_recovery_frames = max(
+            0,
+            self._center_region["outside_after_rally_frames"],
+        )
+        # 新一分开始时不沿用上一回合的速度和位置，避免把场边物体
+        # 通过距离连续性重新接回球轨迹。
+        self._prev_ball_pos = None
+        self._ball_velocity = (0, 0)
+
+    def _is_ball_position_allowed(self, x: float, y: float, width: int, height: int) -> bool:
+        if not self._center_region["enabled"] or self._allow_outside_current:
+            return True
+        return (
+            self._center_region["x_min"] * width <= x <= self._center_region["x_max"] * width
+            and self._center_region["y_min"] * height <= y <= self._center_region["y_max"] * height
+        )
+
     def prepare_background(self, video_path: str) -> bool:
         """从视频采样生成 TrackNetV3 concat 所需的全局中值背景。"""
         if self.background_mode != "concat" or self._backend not in {"pytorch", "tensorrt"}:
@@ -400,6 +436,12 @@ class TrackNetTracker(BaseModelWrapper):
                 continue
             candidates.append((cx, cy, area, g))
 
+        candidates = [
+            candidate
+            for candidate in candidates
+            if self._is_ball_position_allowed(candidate[0], candidate[1], w, h)
+        ]
+
         # 3. 轨迹跟踪选球
         best = None
         if self._prev_ball_pos is not None and self._miss_count < 5:
@@ -468,6 +510,20 @@ class TrackNetTracker(BaseModelWrapper):
         Returns:
             (x, y) 像素坐标, 或 None
         """
+        self._allow_outside_current = self._outside_recovery_frames > 0
+        if self._outside_recovery_frames > 0:
+            self._outside_recovery_frames -= 1
+
+        frame_height, frame_width = frame.shape[:2]
+        if (
+            self._prev_ball_pos is not None
+            and not self._allow_outside_current
+            and not self._is_ball_position_allowed(
+                self._prev_ball_pos[0], self._prev_ball_pos[1], frame_width, frame_height
+            )
+        ):
+            self._prev_ball_pos = None
+
         heatmap = self.infer(frame)
         heatmap = np.asarray(heatmap)
 
@@ -490,7 +546,6 @@ class TrackNetTracker(BaseModelWrapper):
         if num_labels <= 1:
             return None
 
-        frame_height, frame_width = frame.shape[:2]
         heatmap_height, heatmap_width = heatmap.shape
         scale_x = frame_width / heatmap_width
         scale_y = frame_height / heatmap_height
@@ -500,7 +555,10 @@ class TrackNetTracker(BaseModelWrapper):
             # 取该区域的峰值强度
             peak_val = heatmap[labels == i].max()
             # 模型输入通常是 512x288，输出要映射回原视频像素坐标。
-            candidates.append((cx * scale_x, cy * scale_y, peak_val))
+            x = cx * scale_x
+            y = cy * scale_y
+            if self._is_ball_position_allowed(x, y, frame_width, frame_height):
+                candidates.append((x, y, peak_val))
 
         if not candidates:
             return None
@@ -522,6 +580,7 @@ class TrackNetTracker(BaseModelWrapper):
         candidates.sort(key=lambda c: c[2], reverse=True)
         best = candidates[0]
         self._prev_ball_pos = (best[0], best[1])
+        self._allow_outside_current = False
         return (best[0], best[1])
 
     def unload(self):
@@ -530,3 +589,5 @@ class TrackNetTracker(BaseModelWrapper):
         self._frame_buffer.clear()
         self._background_frame = None
         self._prev_ball_pos = None
+        self._outside_recovery_frames = 0
+        self._allow_outside_current = False

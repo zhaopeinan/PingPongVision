@@ -152,6 +152,43 @@ def test_tracknet_annotations_and_frame_endpoint(client, test_video):
     assert out_of_range.status_code == 400
 
 
+def test_table_calibration_lifecycle(client, test_video):
+    with open(test_video, "rb") as f:
+        upload = client.post("/api/upload", files={"file": ("calibrate.mp4", f, "video/mp4")})
+    video_id = upload.json()["video_id"]
+
+    empty = client.get(f"/api/videos/{video_id}/table-calibration")
+    assert empty.status_code == 200
+    assert empty.json()["calibration"] is None
+
+    saved = client.post(
+        f"/api/videos/{video_id}/table-calibration",
+        json={
+            "frame_index": 5,
+            "corners": [[20, 30], [620, 30], [610, 330], [30, 330]],
+            "net_points": [[320, 30], [320, 330]],
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["calibration"]["frame_index"] == 5
+
+    loaded = client.get(f"/api/videos/{video_id}/table-calibration")
+    assert loaded.json()["calibration"]["corners"][0] == [20.0, 30.0]
+
+    invalid = client.post(
+        f"/api/videos/{video_id}/table-calibration",
+        json={
+            "frame_index": 5,
+            "corners": [[-1, 30], [620, 30], [610, 330], [30, 330]],
+        },
+    )
+    assert invalid.status_code == 400
+
+    deleted = client.delete(f"/api/videos/{video_id}/table-calibration")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+
+
 def test_tracknet_models_and_selected_model_propagation(client, test_video, monkeypatch):
     with open(test_video, "rb") as f:
         upload = client.post("/api/upload", files={"file": ("model.mp4", f, "video/mp4")})

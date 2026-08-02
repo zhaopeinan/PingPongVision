@@ -28,6 +28,11 @@ class TableGeometry:
             return cls()
         return cls(corners=np.asarray(corners, dtype=np.float64))
 
+    @classmethod
+    def from_calibration(cls, calibration) -> "TableGeometry":
+        """Build geometry from a persisted per-video calibration object."""
+        return cls(corners=np.asarray(calibration.corners, dtype=np.float64))
+
     @property
     def calibrated(self) -> bool:
         return self.corners is not None

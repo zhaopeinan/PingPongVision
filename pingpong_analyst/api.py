@@ -20,6 +20,7 @@ from loguru import logger
 
 from .core import ActionAnalyzer, VideoAnalyzer
 from .core.tracknet_annotations import BallAnnotation, TrackNetAnnotationStore
+from .core.table_calibration import TableCalibration, TableCalibrationStore
 from .models.tracknet_finetune import TrackNetFineTuner
 from .models.tracknet_registry import TrackNetModelRegistry
 from .utils.config import get_config, resolve_project_path
@@ -48,6 +49,7 @@ _training_lock = threading.Lock()
 # These defaults are replaceable in tests and keep all adaptation data outside
 # source videos and the immutable base checkpoint.
 ANNOTATION_DIR = Path("data/tracknet_annotations")
+TABLE_CALIBRATION_DIR = Path("data/table_calibrations")
 MODEL_REGISTRY_DIR = Path("models/runs")
 TRACKNET_BASE_PATH: Path | None = None
 
@@ -99,6 +101,28 @@ def _update_task_result(task_id: str, **updates) -> None:
 
 def _annotation_store() -> TrackNetAnnotationStore:
     return TrackNetAnnotationStore(ANNOTATION_DIR)
+
+
+def _table_calibration_store() -> TableCalibrationStore:
+    return TableCalibrationStore(TABLE_CALIBRATION_DIR)
+
+
+def _parse_table_calibration(video_id: str, payload) -> TableCalibration:
+    if not isinstance(payload, dict):
+        raise ValueError("table calibration 必须是对象")
+    calibration = TableCalibration.from_dict(payload)
+    info = _video_registry[video_id].get("info", {})
+    total_frames = int(info.get("total_frames", 0))
+    width = int(info.get("width", 0))
+    height = int(info.get("height", 0))
+    if total_frames and calibration.frame_index >= total_frames:
+        raise ValueError("frame_index 超出视频范围")
+    for point in (*calibration.corners, *calibration.net_points):
+        if width and not 0 <= point[0] < width:
+            raise ValueError("标定点 x 超出视频尺寸")
+        if height and not 0 <= point[1] < height:
+            raise ValueError("标定点 y 超出视频尺寸")
+    return calibration
 
 
 def _tracknet_registry() -> TrackNetModelRegistry:
@@ -326,6 +350,40 @@ async def video_info(video_id: str):
     if video_id not in _video_registry:
         return JSONResponse(status_code=404, content={"error": "video not found"})
     return _video_registry[video_id].get("info", {})
+
+
+@app.get("/api/videos/{video_id}/table-calibration")
+async def get_table_calibration(video_id: str):
+    if video_id not in _video_registry:
+        return JSONResponse(status_code=404, content={"error": "video not found"})
+    try:
+        calibration = _table_calibration_store().load(video_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    return {
+        "video_id": video_id,
+        "calibration": calibration.to_dict() if calibration else None,
+    }
+
+
+@app.post("/api/videos/{video_id}/table-calibration")
+async def save_table_calibration(video_id: str, payload=Body(...)):
+    if video_id not in _video_registry:
+        return JSONResponse(status_code=404, content={"error": "video not found"})
+    try:
+        calibration = _parse_table_calibration(video_id, payload)
+        _table_calibration_store().save(video_id, calibration)
+    except (TypeError, ValueError, KeyError) as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"video_id": video_id, "calibration": calibration.to_dict()}
+
+
+@app.delete("/api/videos/{video_id}/table-calibration")
+async def delete_table_calibration(video_id: str):
+    if video_id not in _video_registry:
+        return JSONResponse(status_code=404, content={"error": "video not found"})
+    _table_calibration_store().delete(video_id)
+    return {"video_id": video_id, "deleted": True}
 
 
 @app.get("/api/videos/{video_id}/frame")

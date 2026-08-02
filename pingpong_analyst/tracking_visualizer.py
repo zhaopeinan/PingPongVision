@@ -371,12 +371,6 @@ class TrackingVisualizer:
             cv2.putText(img, ball_text, (12, h - 14),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_BALL, 1, cv2.LINE_AA)
 
-        # 右下角: 人数
-        person_count = "—" if meta["mode"] == "rally" else meta["persons"]
-        person_text = f"PLAYERS: {person_count}"
-        cv2.putText(img, person_text, (w - 140, h - 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_HUD_TEXT, 1, cv2.LINE_AA)
-
         # 击球闪光时显示 HIT
         if self._hit_flash_frames > 0:
             hit_text = "HIT!"

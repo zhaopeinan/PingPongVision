@@ -887,7 +887,6 @@ function updateMetrics(meta) {
   if (meta.rally_count !== undefined) {
     $("metricRallies").textContent = meta.rally_count;
   }
-  $("metricPersons").textContent = meta.mode === "rally" ? "—" : (meta.persons || 0);
 
   // 底部状态栏
   $("footerFrame").textContent = meta.frame;

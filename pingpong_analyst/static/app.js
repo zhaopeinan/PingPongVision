@@ -787,9 +787,15 @@ function startTracking() {
       if (msg.type === "status") {
         if (msg.status === "loading") {
           $("loadingText").textContent = msg.message || "加载模型中...";
+          $("streamText").textContent = "模型加载中...";
           $("modelProgress").style.display = "flex";
           $("modelProgressFill").style.width = (msg.percent || 0) + "%";
           $("modelProgressPct").textContent = (msg.percent || 0) + "%";
+        } else if (msg.status === "preparing") {
+          $("loadingText").textContent = msg.message || "准备视频背景...";
+          $("streamText").textContent = "准备中...";
+          $("streamLoading").style.display = "flex";
+          $("modelProgress").style.display = "none";
         } else if (msg.status === "tracking") {
           $("streamLoading").style.display = "none";
           $("modelProgress").style.display = "none";
@@ -805,7 +811,7 @@ function startTracking() {
           finishTracking();
         } else if (msg.status === "error") {
           $("streamLoading").innerHTML = `<div style="color: var(--data-red)">错误: ${msg.error}</div>`;
-          stopTracking();
+          stopTracking("连接失败");
         }
       } else if (msg.type === "meta") {
         updateMetrics(msg);
@@ -827,7 +833,7 @@ function startTracking() {
 
   ws.onerror = () => {
     $("streamLoading").innerHTML = `<div style="color: var(--data-red)">连接失败</div>`;
-    stopTracking();
+    stopTracking("连接失败");
   };
 
   ws.onclose = () => {
@@ -837,14 +843,14 @@ function startTracking() {
   };
 }
 
-function stopTracking() {
+function stopTracking(statusText = "未连接") {
   state.streaming = false;
   if (state.ws) {
     try { state.ws.send("stop"); } catch {}
     try { state.ws.close(); } catch {}
     state.ws = null;
   }
-  resetTrackingUI();
+  resetTrackingUI(statusText);
 }
 
 function finishTracking() {
@@ -856,13 +862,14 @@ function finishTracking() {
   $("footerState").textContent = "完成";
 }
 
-function resetTrackingUI() {
+function resetTrackingUI(statusText = "未连接") {
   $("trackBtn").innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>开始追踪`;
   $("streamDot").classList.add("status-dot--idle");
   $("streamLoading").style.display = "none";
   $("streamCanvas").style.display = "none";
   $("trackingProgress").style.display = "none";
   $("streamPlaceholder").style.display = "flex";
+  $("streamText").textContent = statusText;
   setTrackingNotice("");
 }
 

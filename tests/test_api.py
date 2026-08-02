@@ -291,7 +291,7 @@ def test_websocket_tracking(client, test_video):
 
         # 模型加载期间会发送多条进度消息，直到进入 tracking。
         msg2 = ws.receive_json()
-        while msg2.get("status") == "loading":
+        while msg2.get("status") in {"loading", "preparing"}:
             msg2 = ws.receive_json()
         assert msg2["type"] == "status"
         assert msg2["status"] == "tracking"

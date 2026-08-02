@@ -730,6 +730,11 @@ async def tracking_ws(websocket: WebSocket, video_id: str):
             )
 
         await loop.run_in_executor(None, lambda: visualizer.load_models(on_progress))
+        await websocket.send_json({
+            "type": "status",
+            "status": "preparing",
+            "message": "正在准备视频背景...",
+        })
         await loop.run_in_executor(None, lambda: visualizer.prepare_background(video_path))
         await websocket.send_json({
             "type": "status",

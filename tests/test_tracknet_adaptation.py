@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import pytest
+from pathlib import Path
 
 from pingpong_analyst.core.tracknet_annotations import (
     BallAnnotation,
@@ -10,6 +11,9 @@ from pingpong_analyst.core.tracknet_annotations import (
 from pingpong_analyst.models.tracknet_preprocess import TrackNetPreprocessor
 from pingpong_analyst.models.tracknet_finetune import masked_heatmap_loss
 from pingpong_analyst.models.tracknet_registry import TrackNetModelRegistry
+from pingpong_analyst.models.tracknet_finetune import TrackNetFineTuner
+from pingpong_analyst.models.tracknet_v3 import TrackNetV3
+from pingpong_analyst.utils.device_manager import DeviceInfo, DeviceType
 
 
 def test_tracknet_preprocessor_builds_concat_batch():
@@ -177,3 +181,43 @@ def test_tracknet_finetuner_requires_minimum_positive_labels():
         tuner._validate_annotations(
             [BallAnnotation(frame_index=index, label="ball", x=2, y=2) for index in range(11)]
         )
+
+
+def test_tracknet_finetuner_runs_one_small_cpu_epoch(tmp_path):
+    video_path = tmp_path / "fine_tune.mp4"
+    _make_annotation_video(video_path, frame_count=16)
+    base_path = tmp_path / "base.pt"
+    import torch
+
+    torch.save(
+        {
+            "model": TrackNetV3(27, 8).state_dict(),
+            "param_dict": {"seq_len": 8, "bg_mode": "concat"},
+        },
+        base_path,
+    )
+    annotations = [
+        BallAnnotation(frame_index=index, label="ball", x=10 + index, y=18)
+        for index in range(12)
+    ]
+    result = TrackNetFineTuner(
+        {
+            "input_width": 64,
+            "input_height": 36,
+            "temporal_frames": 8,
+            "background_samples": 8,
+            "epochs": 1,
+            "batch_size": 2,
+            "min_positive_annotations": 12,
+        }
+    ).train(
+        base_model_path=base_path,
+        video_path=video_path,
+        annotations=annotations,
+        output_dir=tmp_path / "run",
+        device_info=DeviceInfo(DeviceType.CPU, "TestCPU", "cpu", 0, False),
+    )
+
+    assert result["status"] == "completed"
+    assert Path(result["checkpoint_path"]).is_file()
+    assert result["metrics"]["validation_loss"] >= 0

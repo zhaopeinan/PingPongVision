@@ -1,0 +1,21 @@
+# Local runtime and generated artifacts
+.DS_Store
+.playwright-cli/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Video library, exported clips, logs, and local training runs
+data/uploads/
+output/
+logs/
+test_video/
+models/runs/
+
+# Large local model assets and downloaded archives
+*.pt
+*.engine
+*.onnx
+*.zip

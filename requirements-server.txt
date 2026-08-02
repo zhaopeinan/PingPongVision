@@ -1,0 +1,39 @@
+# 服务器部署依赖 (NVIDIA T4 + TensorRT)
+# 使用: pip install -r requirements-server.txt
+# 注意: 需先安装 CUDA 12.x 与 TensorRT 8.6+
+
+# 视频处理
+opencv-python-headless>=4.8.0
+av>=11.0.0
+numpy>=1.24.0
+
+# YOLO11-Pose (Ultralytics) + TensorRT 加速
+ultralytics>=8.3.0
+
+# MediaPipe Pose Landmarker (Heavy)
+mediapipe>=0.10.9
+protobuf>=3.20.0
+
+# TrackNetV3 (PyTorch + TensorRT)
+torch>=2.1.0
+torchvision>=0.16.0
+
+# TensorRT Python 接口 (需匹配服务器 CUDA/TensorRT 版本)
+# 安装方式: pip install tensorrt==8.6.1  (或从 NVIDIA 官方下载 .whl)
+tensorrt>=8.6.0
+
+# GPU 监控
+pynvml>=11.5.0
+
+# 工具库
+pyyaml>=6.0
+tqdm>=4.66.0
+loguru>=0.7.2
+
+# 测试
+pytest>=7.4.0
+
+# API 服务
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6

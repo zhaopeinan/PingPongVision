@@ -1,0 +1,31 @@
+# macOS 本地依赖 (Apple Silicon 可使用 PyTorch MPS，无需 TensorRT)
+# 使用: pip install -r requirements-mac.txt
+
+# 视频处理
+opencv-python>=4.8.0
+av>=11.0.0
+numpy>=1.24.0
+
+# YOLO-Pose (Ultralytics) - macOS MPS/CPU 推理
+ultralytics>=8.3.0
+
+# MediaPipe Pose Landmarker (0.10.x has solutions API, 1.0.0 removed it)
+mediapipe==0.10.14
+protobuf>=3.20.0,<5.0.0
+
+# TrackNetV3 PyTorch（缺少权重时才回退到纯CV）
+torch>=2.1.0
+torchvision>=0.16.0
+
+# 工具库
+pyyaml>=6.0
+tqdm>=4.66.0
+loguru>=0.7.2
+
+# 测试
+pytest>=7.4.0
+
+# API 服务
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6

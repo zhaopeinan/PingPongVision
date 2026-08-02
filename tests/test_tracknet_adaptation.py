@@ -8,6 +8,8 @@ from pingpong_analyst.core.tracknet_annotations import (
     TrackNetWindowDataset,
 )
 from pingpong_analyst.models.tracknet_preprocess import TrackNetPreprocessor
+from pingpong_analyst.models.tracknet_finetune import masked_heatmap_loss
+from pingpong_analyst.models.tracknet_registry import TrackNetModelRegistry
 
 
 def test_tracknet_preprocessor_builds_concat_batch():
@@ -133,3 +135,45 @@ def test_tracknet_window_dataset_absent_has_zero_target(tmp_path):
 
     assert targets.max() == 0
     assert target_mask[-1] == 1
+
+
+def test_masked_heatmap_loss_ignores_unlabeled_outputs():
+    predictions = np.zeros((1, 8, 2, 2), dtype=np.float32)
+    targets = np.zeros_like(predictions)
+    masks = np.zeros((1, 8), dtype=np.float32)
+    masks[0, 7] = 1
+    predictions[0, 0] = 100
+    predictions[0, 7, 0, 0] = 1
+
+    import torch
+
+    loss = masked_heatmap_loss(torch.tensor(predictions), torch.tensor(targets), torch.tensor(masks))
+
+    assert abs(float(loss) - 0.25) < 1e-6
+
+
+def test_tracknet_registry_keeps_base_and_saves_run(tmp_path):
+    base_path = tmp_path / "TrackNet_best.pt"
+    base_path.write_bytes(b"base")
+    registry = TrackNetModelRegistry(tmp_path / "models" / "runs", base_path)
+    run = registry.create_temp_run({"annotation_count": 4})
+    checkpoint = run.output_dir / "TrackNet_best.pt"
+    checkpoint.write_bytes(b"fine-tuned")
+
+    assert registry.list_models()[0].model_id == "base"
+    saved = registry.save_run(run.run_id, checkpoint)
+
+    assert saved.model_id == run.run_id
+    assert registry.resolve(run.run_id).read_bytes() == b"fine-tuned"
+    assert any(item.model_id == run.run_id for item in registry.list_models())
+    registry.discard_run("other-temp-run")
+
+
+def test_tracknet_finetuner_requires_minimum_positive_labels():
+    from pingpong_analyst.models.tracknet_finetune import TrackNetFineTuner
+
+    tuner = TrackNetFineTuner({"min_positive_annotations": 12})
+    with pytest.raises(ValueError, match="至少需要"):
+        tuner._validate_annotations(
+            [BallAnnotation(frame_index=index, label="ball", x=2, y=2) for index in range(11)]
+        )

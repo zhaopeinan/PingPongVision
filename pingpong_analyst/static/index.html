@@ -300,6 +300,11 @@
         <div class="tracknet-annotation__workspace">
           <div class="tracknet-annotation__canvas-wrap">
             <canvas id="tracknetAnnotationCanvas" width="640" height="360"></canvas>
+            <div class="tracknet-annotation__zoom-controls" aria-label="画面缩放控制">
+              <button class="btn btn--icon" id="tracknetZoomOut" title="缩小">−</button>
+              <button class="btn btn--icon" id="tracknetZoomReset" title="重置缩放">100%</button>
+              <button class="btn btn--icon" id="tracknetZoomIn" title="放大">+</button>
+            </div>
             <div class="tracknet-annotation__loading" id="tracknetAnnotationLoading">加载帧中...</div>
           </div>
           <div class="tracknet-annotation__timeline">

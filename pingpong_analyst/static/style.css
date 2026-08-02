@@ -966,11 +966,14 @@ body {
 }
 
 .tracknet-annotation__canvas-wrap {
+  --tracknet-aspect: 1.7777778;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 220px;
+  width: min(100%, calc(55vh * var(--tracknet-aspect)));
+  min-height: 0;
+  aspect-ratio: var(--tracknet-aspect);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   overflow: hidden;
@@ -978,10 +981,31 @@ body {
 
 .tracknet-annotation__canvas-wrap canvas {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-height: 55vh;
-  object-fit: contain;
+  height: 100%;
+  max-height: none;
+  transform-origin: 0 0;
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.tracknet-annotation__zoom-controls {
+  position: absolute;
+  right: var(--space-sm);
+  bottom: var(--space-sm);
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+}
+
+.tracknet-annotation__zoom-controls .btn {
+  min-width: 30px;
+  padding: 5px 7px;
+  background: color-mix(in oklch, var(--bg-panel) 88%, transparent);
+  backdrop-filter: blur(4px);
 }
 
 .tracknet-annotation__loading {

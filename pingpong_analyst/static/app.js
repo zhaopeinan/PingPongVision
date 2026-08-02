@@ -25,6 +25,12 @@ const state = {
   trainingPollTimer: null,
   annotationLoadToken: 0,
   annotationImage: null,
+  annotationZoom: 1,
+  annotationPanX: 0,
+  annotationPanY: 0,
+  annotationPointer: null,
+  annotationDragged: false,
+  annotationSuppressClick: false,
 };
 
 // ========== 初始化 ==========
@@ -70,6 +76,14 @@ function bindEvents() {
   $("tracknetSaveModelBtn").addEventListener("click", saveTracknetTrainingResult);
   $("tracknetDiscardModelBtn").addEventListener("click", discardTracknetTrainingResult);
   $("tracknetAnnotationCanvas").addEventListener("click", handleBallCanvasClick);
+  $("tracknetAnnotationCanvas").addEventListener("pointerdown", beginAnnotationPan);
+  $("tracknetAnnotationCanvas").addEventListener("pointermove", moveAnnotationPan);
+  $("tracknetAnnotationCanvas").addEventListener("pointerup", endAnnotationPan);
+  $("tracknetAnnotationCanvas").addEventListener("pointercancel", endAnnotationPan);
+  $("tracknetAnnotationCanvas").addEventListener("wheel", handleAnnotationWheel, { passive: false });
+  $("tracknetZoomOut").addEventListener("click", () => setAnnotationZoom(state.annotationZoom - 0.25));
+  $("tracknetZoomReset").addEventListener("click", resetAnnotationView);
+  $("tracknetZoomIn").addEventListener("click", () => setAnnotationZoom(state.annotationZoom + 0.25));
   $("tracknetModelSelect").addEventListener("change", (event) => {
     state.selectedModelId = event.target.value || "base";
     const selected = event.target.selectedOptions[0];
@@ -300,6 +314,7 @@ async function loadTracknetModels() {
 async function openTracknetAnnotationModal() {
   if (!state.videoId) return;
   $("tracknetAnnotationModal").classList.add("modal--open");
+  resetAnnotationView();
   $("tracknetAnnotationLoading").style.display = "flex";
   $("tracknetAnnotationStatus").textContent = "加载已有标注...";
   try {
@@ -339,6 +354,9 @@ async function loadAnnotationFrame(frameIndex) {
       const canvas = $("tracknetAnnotationCanvas");
       canvas.width = Number(state.videoInfo?.width || image.naturalWidth);
       canvas.height = Number(state.videoInfo?.height || image.naturalHeight);
+      const canvasWrap = $("tracknetAnnotationCanvas").parentElement;
+      canvasWrap.style.setProperty("--tracknet-aspect", String(canvas.width / canvas.height));
+      canvasWrap.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
       state.annotationImage = image;
       drawTracknetAnnotationFrame();
       URL.revokeObjectURL(url);
@@ -361,6 +379,84 @@ function drawTracknetAnnotationFrame() {
   const ctx = canvas.getContext("2d");
   if (state.annotationImage) ctx.drawImage(state.annotationImage, 0, 0, canvas.width, canvas.height);
   drawTracknetAnnotationMarker();
+}
+
+function clampAnnotationPan() {
+  const canvas = $("tracknetAnnotationCanvas");
+  const viewport = canvas.parentElement.getBoundingClientRect();
+  const scaledWidth = viewport.width * state.annotationZoom;
+  const scaledHeight = viewport.height * state.annotationZoom;
+  const minX = Math.min(0, viewport.width - scaledWidth);
+  const minY = Math.min(0, viewport.height - scaledHeight);
+  state.annotationPanX = Math.min(0, Math.max(minX, state.annotationPanX));
+  state.annotationPanY = Math.min(0, Math.max(minY, state.annotationPanY));
+}
+
+function applyAnnotationTransform() {
+  const canvas = $("tracknetAnnotationCanvas");
+  clampAnnotationPan();
+  canvas.style.transform = `translate(${state.annotationPanX}px, ${state.annotationPanY}px) scale(${state.annotationZoom})`;
+  $("tracknetZoomReset").textContent = `${Math.round(state.annotationZoom * 100)}%`;
+}
+
+function resetAnnotationView() {
+  state.annotationZoom = 1;
+  state.annotationPanX = 0;
+  state.annotationPanY = 0;
+  applyAnnotationTransform();
+}
+
+function setAnnotationZoom(nextZoom, clientX = null, clientY = null) {
+  const canvas = $("tracknetAnnotationCanvas");
+  const viewport = canvas.parentElement.getBoundingClientRect();
+  const oldRect = canvas.getBoundingClientRect();
+  const anchorX = clientX ?? (viewport.left + viewport.width / 2);
+  const anchorY = clientY ?? (viewport.top + viewport.height / 2);
+  const sourceX = ((anchorX - oldRect.left) / oldRect.width) * canvas.width;
+  const sourceY = ((anchorY - oldRect.top) / oldRect.height) * canvas.height;
+  const next = Math.min(4, Math.max(1, Math.round(nextZoom * 4) / 4));
+  state.annotationZoom = next;
+  state.annotationPanX = anchorX - viewport.left - (sourceX / canvas.width) * viewport.width * next;
+  state.annotationPanY = anchorY - viewport.top - (sourceY / canvas.height) * viewport.height * next;
+  applyAnnotationTransform();
+}
+
+function handleAnnotationWheel(event) {
+  event.preventDefault();
+  setAnnotationZoom(state.annotationZoom + (event.deltaY < 0 ? 0.25 : -0.25), event.clientX, event.clientY);
+}
+
+function beginAnnotationPan(event) {
+  if (event.button !== 0) return;
+  state.annotationPointer = {
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    panX: state.annotationPanX,
+    panY: state.annotationPanY,
+  };
+  state.annotationDragged = false;
+  event.currentTarget.setPointerCapture(event.pointerId);
+}
+
+function moveAnnotationPan(event) {
+  const pointer = state.annotationPointer;
+  if (!pointer || pointer.id !== event.pointerId) return;
+  const dx = event.clientX - pointer.x;
+  const dy = event.clientY - pointer.y;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) state.annotationDragged = true;
+  if (!state.annotationDragged || state.annotationZoom <= 1) return;
+  state.annotationPanX = pointer.panX + dx;
+  state.annotationPanY = pointer.panY + dy;
+  applyAnnotationTransform();
+}
+
+function endAnnotationPan(event) {
+  const pointer = state.annotationPointer;
+  if (!pointer || pointer.id !== event.pointerId) return;
+  state.annotationSuppressClick = state.annotationDragged;
+  state.annotationPointer = null;
+  try { event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
 }
 
 function drawTracknetAnnotationMarker() {
@@ -400,10 +496,14 @@ function setTracknetAnnotationMode(mode) {
 
 function handleBallCanvasClick(event) {
   if (state.annotationMode !== "ball") return;
+  if (state.annotationSuppressClick) {
+    state.annotationSuppressClick = false;
+    return;
+  }
   const canvas = $("tracknetAnnotationCanvas");
   const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left) * canvas.width / rect.width;
-  const y = (event.clientY - rect.top) * canvas.height / rect.height;
+  const x = Math.min(canvas.width, Math.max(0, (event.clientX - rect.left) * canvas.width / rect.width));
+  const y = Math.min(canvas.height, Math.max(0, (event.clientY - rect.top) * canvas.height / rect.height));
   upsertTracknetAnnotation({ frame_index: state.annotationFrame, label: "ball", x, y });
   drawTracknetAnnotationFrame();
   updateTracknetAnnotationSummary();

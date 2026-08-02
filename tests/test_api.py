@@ -302,6 +302,7 @@ def test_websocket_tracking(client, test_video):
         assert "timestamp" in msg3
         assert "ball_speed" in msg3
         assert "board_count" in msg3
+        assert "rally_count" in msg3
         assert "rally_state" in msg3
         assert msg3["mode"] == "rally"
         assert msg3["persons"] == 0

@@ -884,7 +884,10 @@ function updateMetrics(meta) {
   // 实时指标
   $("metricBoards").textContent = meta.board_count || 0;
   $("metricBallSpeed").innerHTML = `${meta.ball_speed || 0}<span class="metric__unit">px/f</span>`;
-  $("metricPersons").textContent = meta.persons || 0;
+  if (meta.rally_count !== undefined) {
+    $("metricRallies").textContent = meta.rally_count;
+  }
+  $("metricPersons").textContent = meta.mode === "rally" ? "—" : (meta.persons || 0);
 
   // 底部状态栏
   $("footerFrame").textContent = meta.frame;

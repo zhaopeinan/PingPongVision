@@ -775,6 +775,7 @@ async def tracking_ws(websocket: WebSocket, video_id: str):
                     "ball_pos": meta["ball_pos"],
                     "ball_speed": meta["ball_speed"],
                     "persons": meta["persons"],
+                    "rally_count": meta["rally_count"],
                     "board_count": meta["board_count"],
                     "rally_state": meta["rally_state"],
                     "arm_angles": meta["arm_angles"],

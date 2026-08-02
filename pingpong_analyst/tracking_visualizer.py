@@ -251,6 +251,11 @@ class TrackingVisualizer:
             "ball_pos": [round(p, 1) for p in ball_pos] if ball_pos else None,
             "ball_speed": round(frame_data.ball_speed, 1),
             "persons": len(persons),
+            # 实时追踪要把当前进行中的回合也展示出来；视频结束后，
+            # 未达到最小板数的回合仍会被离线结果过滤掉。
+            "rally_count": len(self.rally_detector.get_valid_segments()) + (
+                1 if self.rally_detector.state == RallyState.RALLY_ACTIVE else 0
+            ),
             "board_count": self._board_count,
             "rally_state": self.rally_detector.state.value,
             "arm_angles": arm_angles,
@@ -367,7 +372,8 @@ class TrackingVisualizer:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_BALL, 1, cv2.LINE_AA)
 
         # 右下角: 人数
-        person_text = f"PLAYERS: {meta['persons']}"
+        person_count = "—" if meta["mode"] == "rally" else meta["persons"]
+        person_text = f"PLAYERS: {person_count}"
         cv2.putText(img, person_text, (w - 140, h - 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_HUD_TEXT, 1, cv2.LINE_AA)
 

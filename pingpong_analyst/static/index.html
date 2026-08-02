@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PingPong AI Analyst</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar__brand">
+        <div class="topbar__logo"></div>
+        <div>
+          <div class="topbar__title">PingPong AI Analyst</div>
+          <div class="topbar__subtitle">TTcut · Deep Rally Analysis</div>
+        </div>
+      </div>
+      <div class="topbar__status">
+        <div class="status-pill" id="devicePill">
+          <span class="status-dot status-dot--idle"></span>
+          <span id="deviceText">检测中...</span>
+        </div>
+        <div class="status-pill">
+          <span class="status-dot status-dot--idle" id="streamDot"></span>
+          <span id="streamText">未连接</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="viewport">
+        <div class="viewport__toolbar">
+          <div class="viewport__title">实时追踪 / Live Tracking</div>
+          <div class="toolbar__actions">
+            <button class="btn" id="libraryBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              视频库
+            </button>
+            <button class="btn" id="uploadBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+              上传视频
+            </button>
+            <button class="btn btn--primary" id="trackBtn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              回合追踪
+            </button>
+            <button class="btn" id="annotateBtn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/><path d="M15 5l3 3"/></svg>
+              标注球
+            </button>
+            <button class="btn" id="analyzeBtn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+              回合剪辑
+            </button>
+            <button class="btn" id="actionBtn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/><path d="M8 12h8"/></svg>
+              动作分析
+            </button>
+            <label class="playback-control" for="playbackSpeed">
+              速度
+              <select id="playbackSpeed" aria-label="播放速度">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+            <input type="file" id="fileInput" accept="video/*" style="display:none">
+          </div>
+        </div>
+
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-card">
+            <div class="upload-card__icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            </div>
+            <div class="upload-card__heading">上传训练视频</div>
+            <div class="upload-card__text">拖放视频文件到此处，或点击上方"上传视频"按钮</div>
+            <div class="upload-card__formats">MP4 · AVI · MOV · MKV</div>
+          </div>
+        </div>
+
+        <div class="viewer viewer--hidden" id="viewer">
+          <div class="stream-placeholder" id="streamPlaceholder">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <div>点击「回合追踪」启动纯球轨迹实时分析</div>
+          </div>
+          <div class="stream-loading" id="streamLoading" style="display:none">
+            <div class="spinner"></div>
+            <div id="loadingText">加载模型中...</div>
+            <div class="model-progress" id="modelProgress" style="display:none">
+              <div class="model-progress__bar"><div class="model-progress__fill" id="modelProgressFill"></div></div>
+              <div class="model-progress__pct" id="modelProgressPct">0%</div>
+            </div>
+          </div>
+          <canvas class="stream-frame" id="streamCanvas" style="display:none"></canvas>
+          <div class="tracking-progress" id="trackingProgress" style="display:none">
+            <div class="tracking-progress__bar" id="trackingProgressBar"></div>
+          </div>
+          <div class="tracking-notice" id="trackingNotice" hidden></div>
+        </div>
+
+        <div class="viewport__footer">
+          <div class="footer__meta">
+            <span>文件: <strong id="footerFile">—</strong></span>
+            <span>分辨率: <strong id="footerRes">—</strong></span>
+            <span>FPS: <strong id="footerFps">—</strong></span>
+          </div>
+          <div class="footer__meta">
+            <span>帧: <strong id="footerFrame">—</strong> / <strong id="footerTotalFrame">—</strong></span>
+            <span>时间: <strong id="footerTime">—</strong>s</span>
+            <span>状态: <strong id="footerState">—</strong></span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="sidebar__section">
+          <div class="section__header">
+            <div class="section__title">实时指标</div>
+            <div class="section__badge" id="liveBadge">IDLE</div>
+          </div>
+          <div class="metrics">
+            <div class="metric metric--accent">
+              <div class="metric__label">板数</div>
+              <div class="metric__value" id="metricBoards">0</div>
+            </div>
+            <div class="metric metric--cyan">
+              <div class="metric__label">球速</div>
+              <div class="metric__value" id="metricBallSpeed">0<span class="metric__unit">px/f</span></div>
+            </div>
+            <div class="metric metric--green">
+              <div class="metric__label">回合</div>
+              <div class="metric__value" id="metricRallies">0</div>
+            </div>
+            <div class="metric">
+              <div class="metric__label">人数</div>
+              <div class="metric__value" id="metricPersons">0</div>
+            </div>
+          </div>
+          <div class="arm-angles" id="armAnglesPanel" style="display:none">
+            <div class="arm-angles__title">关节角度</div>
+            <div class="arm-angles__grid">
+              <div class="arm-angle-item"><span>左肘</span><strong id="angleLeftElbow">—</strong></div>
+              <div class="arm-angle-item"><span>右肘</span><strong id="angleRightElbow">—</strong></div>
+              <div class="arm-angle-item"><span>左肩</span><strong id="angleLeftShoulder">—</strong></div>
+              <div class="arm-angle-item"><span>右肩</span><strong id="angleRightShoulder">—</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar__section">
+          <div class="section__header">
+            <div class="section__title">分析任务</div>
+            <div class="section__badge" id="analysisBadge">空闲</div>
+          </div>
+          <div class="analysis-status">
+            <div class="analysis-progress">
+              <div class="analysis-progress__bar" id="progressBar"></div>
+            </div>
+            <div class="analysis-status__text" id="analysisText">上传视频后开始分析</div>
+          </div>
+          <div class="min-boards-control">
+            <label>最小板数阈值</label>
+            <input type="number" id="minBoardsInput" value="6" min="1" max="50">
+          </div>
+          <div class="model-selector">
+            <label for="tracknetModelSelect">TrackNet 模型</label>
+            <select id="tracknetModelSelect" aria-label="TrackNet 模型"></select>
+            <div class="model-selector__status" id="tracknetModelStatus">基础模型</div>
+          </div>
+        </div>
+
+        <div class="sidebar__section">
+          <div class="section__header">
+            <div class="section__title">精彩回合</div>
+            <div class="section__badge" id="rallyCountBadge">0</div>
+          </div>
+          <div class="rally-list" id="rallyList">
+            <div class="rally-list--empty">分析完成后在此显示回合列表</div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- 剪辑回放弹窗 -->
+  <div class="modal" id="clipModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content">
+      <div class="modal__header">
+        <div class="modal__title" id="modalTitle">剪辑回放</div>
+        <button class="modal__close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <video id="clipPlayer" controls autoplay class="clip-player"></video>
+        <div class="modal__details" id="modalDetails"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 击球事件详情弹窗 -->
+  <div class="modal" id="rallyModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content modal__content--wide">
+      <div class="modal__header">
+        <div class="modal__title" id="rallyModalTitle">回合详情</div>
+        <button class="modal__close" id="rallyModalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <div class="rally-detail" id="rallyDetailContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 视频库弹窗 -->
+  <div class="modal" id="libraryModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content modal__content--wide">
+      <div class="modal__header">
+        <div class="modal__title">视频库 / Video Library</div>
+        <button class="modal__close" id="libraryModalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <div class="library" id="libraryContent">
+          <div class="library__loading">加载中...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 人物选择弹窗 -->
+  <div class="modal" id="personSelectModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content modal__content--wide">
+      <div class="modal__header">
+        <div class="modal__title">选择追踪目标 / Select Players</div>
+        <button class="modal__close" id="personSelectModalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <div class="person-select__hint">
+          点击画面中选择要追踪的 <strong>2名选手</strong>（橙色框为选中），完成后点击「开始追踪」
+        </div>
+        <div class="person-select__container">
+          <img id="personSelectImg" class="person-select__img" />
+          <div class="person-select__overlay" id="personSelectOverlay"></div>
+          <div class="person-select__loading" id="personSelectLoading">检测中...</div>
+        </div>
+        <div class="person-select__actions">
+          <span class="person-select__count" id="personSelectCount">已选: 0/2</span>
+          <button class="btn btn--primary" id="personSelectConfirm" disabled>开始追踪</button>
+          <button class="btn" id="personSelectSkip">跳过（追踪所有人）</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 独立动作分析入口 -->
+  <div class="modal" id="actionModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content modal__content--wide">
+      <div class="modal__header">
+        <div class="modal__title" id="actionModalTitle">动作分析</div>
+        <button class="modal__close" id="actionModalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <div id="actionSourcePanel" class="action-source">
+          <div class="action-source__title">选择分析范围</div>
+          <div class="action-source__actions">
+            <button class="btn btn--primary" id="actionOriginalBtn">原始视频</button>
+            <button class="btn" id="actionAllBtn" disabled>全部回合片段</button>
+          </div>
+          <div class="action-source__hint">动作分析会保留逐帧姿态、关节角度和躯干指标；身份无法确认时标记为 unknown。</div>
+        </div>
+        <div id="actionProgressPanel" class="action-progress" style="display:none">
+          <div class="spinner"></div>
+          <div id="actionProgressText">正在分析动作...</div>
+        </div>
+        <div id="actionReportPanel" style="display:none">
+          <div class="action-report" id="actionReport"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TrackNet 手动标注与微调 -->
+  <div class="modal" id="tracknetAnnotationModal">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content modal__content--wide tracknet-annotation-modal">
+      <div class="modal__header">
+        <div class="modal__title">球位置标注 / TrackNet Adaptation</div>
+        <button class="modal__close" id="tracknetAnnotationModalClose">&times;</button>
+      </div>
+      <div class="modal__body">
+        <div class="tracknet-annotation__workspace">
+          <div class="tracknet-annotation__canvas-wrap">
+            <canvas id="tracknetAnnotationCanvas" width="640" height="360"></canvas>
+            <div class="tracknet-annotation__loading" id="tracknetAnnotationLoading">加载帧中...</div>
+          </div>
+          <div class="tracknet-annotation__timeline">
+            <div class="tracknet-annotation__frame-row">
+              <button class="btn btn--icon" id="tracknetPrevFrame" title="上一帧">◀</button>
+              <input type="range" id="tracknetFrameRange" min="0" max="0" value="0">
+              <button class="btn btn--icon" id="tracknetNextFrame" title="下一帧">▶</button>
+              <input class="tracknet-annotation__frame-input" type="number" id="tracknetFrameInput" min="0" value="0">
+              <span id="tracknetFrameLabel">帧 0 / 0</span>
+            </div>
+            <div class="tracknet-annotation__mode-row">
+              <button class="btn btn--primary" id="tracknetBallMode">标注球</button>
+              <button class="btn" id="tracknetAbsentBtn">无球 / 不可见</button>
+              <button class="btn" id="tracknetSkipBtn">跳过此帧</button>
+              <span class="tracknet-annotation__count" id="tracknetAnnotationCount">0 个标注</span>
+            </div>
+          </div>
+          <div class="tracknet-annotation__actions">
+            <div class="tracknet-annotation__status" id="tracknetAnnotationStatus">点击球心添加标注</div>
+            <div class="tracknet-annotation__buttons">
+              <button class="btn" id="tracknetSaveAnnotationsBtn">保存标注</button>
+              <button class="btn btn--primary" id="tracknetTrainBtn" disabled>开始微调</button>
+            </div>
+          </div>
+          <div class="tracknet-training" id="tracknetTrainingPanel" hidden>
+            <div class="tracknet-training__header">
+              <span id="tracknetTrainingStatus">训练准备中</span>
+              <span id="tracknetTrainingProgressText">0%</span>
+            </div>
+            <div class="tracknet-training__bar"><div id="tracknetTrainingProgressBar"></div></div>
+            <div class="tracknet-training__metrics" id="tracknetTrainingMetrics"></div>
+            <div class="tracknet-training__actions">
+              <button class="btn" id="tracknetCancelTrainingBtn">取消训练</button>
+              <button class="btn btn--primary" id="tracknetSaveModelBtn" disabled>保存模型版本</button>
+              <button class="btn" id="tracknetDiscardModelBtn" disabled>放弃结果</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -215,6 +215,10 @@ def test_analyze_existing(client, test_video):
     assert res.status_code == 200
     assert res.json()["status"] == "processing"
 
+    status = client.get(f"/api/result/{video_id}")
+    assert status.status_code == 200
+    assert 0 <= status.json()["progress"] <= 100
+
 
 def test_analyze_not_found(client):
     res = client.post("/api/analyze/nonexistent")

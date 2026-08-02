@@ -53,11 +53,15 @@ def test_video(tmp_path):
 def test_end_to_end_analysis(test_video):
     """端到端: 视频分析 -> 回合检测"""
     analyzer = VideoAnalyzer()
-    segments = analyzer.analyze(test_video, max_frames=120)
+    progress = []
+    segments = analyzer.analyze(test_video, max_frames=120, progress_callback=progress.append)
 
     # 合成视频有来回运动, 应能检测到一些事件
     # (CV回退模式可能检测效果有限, 宽松断言)
     assert isinstance(segments, list)
+    assert progress
+    assert progress[-1] == 1.0
+    assert all(0.0 <= value <= 1.0 for value in progress)
     print(f"\n检测到 {len(segments)} 个有效回合")
 
 

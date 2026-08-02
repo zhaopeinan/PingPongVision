@@ -6,7 +6,7 @@
 采用流水线并行: 分阶段释放显存
 """
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 from loguru import logger
@@ -83,7 +83,12 @@ class VideoAnalyzer:
             self._mediapipe.unload()
             self._mediapipe = None
 
-    def analyze(self, video_path: str, max_frames: int = -1) -> list[RallySegment]:
+    def analyze(
+        self,
+        video_path: str,
+        max_frames: int = -1,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> list[RallySegment]:
         """
         分析视频, 返回有效回合片段
 
@@ -102,7 +107,7 @@ class VideoAnalyzer:
         self._load_models_stage1(include_pose=False)
 
         try:
-            segments = self._run_pipeline(video_path, max_frames)
+            segments = self._run_pipeline(video_path, max_frames, progress_callback)
         finally:
             # 释放所有模型显存
             if self._yolo:
@@ -119,7 +124,12 @@ class VideoAnalyzer:
         self.aligner.reset()
         self.rally_detector.reset()
 
-    def _run_pipeline(self, video_path: str, max_frames: int) -> list[RallySegment]:
+    def _run_pipeline(
+        self,
+        video_path: str,
+        max_frames: int,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> list[RallySegment]:
         """执行处理管线"""
         import av
         from tqdm import tqdm
@@ -138,6 +148,7 @@ class VideoAnalyzer:
         logger.info(f"视频信息: {video_path} | FPS={fps:.1f} | 总帧数={total_frames}")
 
         frame_idx = 0
+        last_progress = -1
         pbar = tqdm(total=total_frames, desc="分析进度", unit="帧")
 
         for frame in container.decode(video=0):
@@ -188,11 +199,20 @@ class VideoAnalyzer:
             frame_idx += 1
             pbar.update(1)
 
+            if progress_callback and total_frames > 0:
+                progress = min(1.0, frame_idx / total_frames)
+                progress_percent = int(progress * 100)
+                if progress_percent != last_progress:
+                    progress_callback(progress)
+                    last_progress = progress_percent
+
         pbar.close()
         container.close()
 
         # flush 最后一个回合
         self.rally_detector.flush(frame_idx, frame_idx / fps)
+        if progress_callback:
+            progress_callback(1.0)
 
         return self.rally_detector.get_valid_segments()
 

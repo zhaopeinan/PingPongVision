@@ -653,6 +653,13 @@ body {
   border-radius: 2px;
 }
 
+.analysis-progress__value {
+  align-self: flex-end;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .analysis-status__text {
   font-family: var(--font-mono);
   font-size: 11px;

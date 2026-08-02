@@ -41,6 +41,7 @@ _video_registry: dict[str, dict] = {}
 _task_results: dict[str, dict] = {}
 _clip_registry: dict[str, list[str]] = {}
 _analysis_lock = threading.Lock()
+_task_results_lock = threading.Lock()
 _training_jobs: dict[str, dict] = {}
 _training_lock = threading.Lock()
 
@@ -86,6 +87,14 @@ def _scan_library():
 def get_analyzer(tracknet_model_path: str | None = None) -> VideoAnalyzer:
     """创建一次性分析器, 避免跨任务共享时序状态和模型对象。"""
     return VideoAnalyzer(tracknet_model_path=tracknet_model_path)
+
+
+def _update_task_result(task_id: str, **updates) -> None:
+    """原子更新后台任务状态，避免轮询读到半截结果。"""
+    with _task_results_lock:
+        result = dict(_task_results.get(task_id, {}))
+        result.update(updates)
+        _task_results[task_id] = result
 
 
 def _annotation_store() -> TrackNetAnnotationStore:
@@ -858,6 +867,13 @@ async def analyze_video(
         return JSONResponse(status_code=409, content={"error": str(exc)})
     except LookupError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
+    _update_task_result(
+        task_id,
+        status="processing",
+        mode="rally",
+        progress=0,
+        message="分析任务已排队",
+    )
     background_tasks.add_task(
         _run_analysis_task,
         str(video_path),
@@ -889,6 +905,13 @@ async def analyze_existing(
         return JSONResponse(status_code=409, content={"error": str(exc)})
     except LookupError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
+    _update_task_result(
+        task_id,
+        status="processing",
+        mode="rally",
+        progress=0,
+        message="分析任务已排队",
+    )
     background_tasks.add_task(
         _run_analysis_task,
         video_path,
@@ -910,18 +933,50 @@ def _run_analysis_task(
     """后台执行分析任务"""
     try:
         # T4 只有16GB显存, 串行分析可避免多个后台任务同时加载三套模型。
+        _update_task_result(
+            task_id,
+            status="processing",
+            mode="rally",
+            progress=5,
+            message="正在加载 TrackNet 模型...",
+        )
         with _analysis_lock:
             analyzer = get_analyzer(tracknet_model_path=model_path)
             analyzer.rally_detector.min_boards = min_boards
-            segments = analyzer.analyze(video_path, max_frames=max_frames)
+
+            def on_progress(ratio: float) -> None:
+                ratio = min(max(float(ratio), 0.0), 1.0)
+                _update_task_result(
+                    task_id,
+                    status="processing",
+                    mode="rally",
+                    progress=5 + int(ratio * 85),
+                    message="正在分析视频帧...",
+                )
+
+            segments = analyzer.analyze(
+                video_path,
+                max_frames=max_frames,
+                progress_callback=on_progress,
+            )
+            _update_task_result(
+                task_id,
+                status="processing",
+                mode="rally",
+                progress=92,
+                message="正在生成回合剪辑...",
+            )
             outputs = analyzer.export_clips(video_path, segments)
             _clip_registry[task_id] = [Path(path).name for path in outputs]
 
-        _task_results[task_id] = {
-            "status": "completed",
-            "mode": "rally",
-            "total_rallies": len(segments),
-            "rallies": [
+        _update_task_result(
+            task_id,
+            status="completed",
+            mode="rally",
+            progress=100,
+            message="分析完成",
+            total_rallies=len(segments),
+            rallies=[
                 {
                     "index": i + 1,
                     "start_time": round(s.start_time, 2),
@@ -933,12 +988,19 @@ def _run_analysis_task(
                 }
                 for i, s in enumerate(segments)
             ],
-            "clips": [Path(p).name for p in outputs],
-        }
+            clips=[Path(p).name for p in outputs],
+        )
         logger.info(f"任务 {task_id}: 完成, {len(segments)} 个回合, {len(outputs)} 个片段")
     except Exception as e:
         logger.error(f"任务 {task_id}: 失败 - {e}")
-        _task_results[task_id] = {"status": "failed", "error": str(e)}
+        _update_task_result(
+            task_id,
+            status="failed",
+            mode="rally",
+            progress=0,
+            message="分析失败",
+            error=str(e),
+        )
 
 
 def _resolve_clip_path(filename: str) -> Path:
@@ -1029,12 +1091,14 @@ def _run_action_analysis_task(source_paths: list[str], task_id: str, max_frames:
 @app.get("/api/result/{task_id}")
 async def get_result(task_id: str):
     """查询任务结果"""
-    if task_id not in _task_results:
-        return JSONResponse(
-            status_code=404,
-            content={"task_id": task_id, "status": "not_found_or_processing"},
-        )
-    return {"task_id": task_id, **_task_results[task_id]}
+    with _task_results_lock:
+        if task_id not in _task_results:
+            return JSONResponse(
+                status_code=404,
+                content={"task_id": task_id, "status": "not_found_or_processing"},
+            )
+        result = dict(_task_results[task_id])
+    return {"task_id": task_id, **result}
 
 
 @app.get("/api/clips/{filename}")

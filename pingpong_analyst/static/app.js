@@ -924,7 +924,7 @@ async function startAnalysis() {
   $("analyzeBtn").disabled = true;
   $("analysisBadge").textContent = "分析中";
   $("analysisText").textContent = "正在进行纯球回合分析并生成剪辑...";
-  $("progressBar").style.width = "30%";
+  updateAnalysisProgress(0);
 
   try {
     const res = await fetch(`/api/analyze/${state.videoId}?min_boards=${minBoards}&model_id=${encodeURIComponent(state.selectedModelId)}`, { method: "POST" });
@@ -939,21 +939,29 @@ async function startAnalysis() {
   }
 }
 
+function updateAnalysisProgress(progress) {
+  const value = Math.min(100, Math.max(0, Math.round(Number(progress) || 0)));
+  $("progressBar").style.width = value + "%";
+  $("analysisProgressText").textContent = value + "%";
+}
+
 function pollResult(taskId) {
   if (state.pollTimer) clearInterval(state.pollTimer);
-  let progress = 30;
 
   state.pollTimer = setInterval(async () => {
     try {
       const res = await fetch(`/api/result/${taskId}`);
       const data = await res.json();
 
+      if (data.progress !== undefined) updateAnalysisProgress(data.progress);
+      if (data.message) $("analysisText").textContent = data.message;
+
       if (data.status === "completed") {
         clearInterval(state.pollTimer);
         state.pollTimer = null;
         state.analysisData = data;
 
-        $("progressBar").style.width = "100%";
+        updateAnalysisProgress(100);
         $("analysisBadge").textContent = "完成";
         $("analysisText").textContent = `检测到 ${data.total_rallies} 个回合, ${data.clips.length} 个剪辑片段`;
         $("analyzeBtn").disabled = false;
@@ -968,9 +976,6 @@ function pollResult(taskId) {
         $("analysisText").textContent = "分析失败: " + data.error;
         $("analysisBadge").textContent = "失败";
         $("analyzeBtn").disabled = false;
-      } else {
-        progress = Math.min(progress + 5, 90);
-        $("progressBar").style.width = progress + "%";
       }
     } catch {}
   }, 2000);

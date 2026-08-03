@@ -61,6 +61,7 @@
   "project_id": "e6a1c2d4",
   "video_id": "0c42afad",
   "source_filename": "0c42afad_test.mp4",
+  "source_storage_name": "0c42afad_test.mp4",
   "status": "draft",
   "created_at": "2026-08-03T16:00:00+08:00",
   "updated_at": "2026-08-03T16:05:00+08:00",
@@ -93,7 +94,7 @@
 
 `clip_start_time` 和 `clip_end_time` 使用现有剪辑器的前后缓冲，默认分别为检测时间减/加 0.5 秒，并限制在原视频范围内。`edit_start_time` 和 `edit_end_time` 默认等于这两个值，用户可以在该范围内微调，保证播放器预览和最终渲染使用相同的时间窗口。
 
-客户端只接收项目 ID、视频文件名和分段元数据，不接收服务器真实路径。服务端根据 `video_id` 和项目文件解析原始视频，所有文件名和项目 ID 都要经过路径边界校验。
+`source_filename` 用于页面展示，`source_storage_name` 用于服务端在视频库中重新定位实际文件。现有视频库重启后会重新生成内存 `video_id`，因此不能只依赖 `video_id` 做恢复。客户端只接收项目 ID、展示文件名和分段元数据，不接收服务器真实路径。服务端优先根据当前视频注册项映射 `source_storage_name`，再根据安全文件名解析原始视频，所有文件名和项目 ID 都要经过路径边界校验。
 
 ## 后端 API
 

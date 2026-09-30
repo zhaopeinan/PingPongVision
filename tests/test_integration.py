@@ -54,7 +54,9 @@ def test_end_to_end_analysis(test_video):
     """端到端: 视频分析 -> 回合检测"""
     analyzer = VideoAnalyzer()
     progress = []
-    segments = analyzer.analyze(test_video, max_frames=120, progress_callback=progress.append)
+    segments = analyzer.analyze(
+        test_video, max_frames=120, progress_callback=progress.append, enrich_hits=False
+    )
 
     # 合成视频有来回运动, 应能检测到一些事件
     # (CV回退模式可能检测效果有限, 宽松断言)

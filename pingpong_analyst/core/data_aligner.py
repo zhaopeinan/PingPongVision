@@ -10,7 +10,15 @@ from typing import Optional
 import numpy as np
 from loguru import logger
 
-from .table_geometry import TableGeometry
+from .table_geometry import TableGeometry, net_placement_label, table_speed_kmh
+
+
+def _finite_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
 
 
 @dataclass
@@ -31,24 +39,100 @@ class FrameData:
     arm_angles: Optional[dict] = None  # {"left_elbow_angle": ..., ...}
 
     # 球速度 (由DataAligner计算)
-    ball_speed: float = 0.0
+    ball_speed: float = 0.0  # 像素/帧，供跨区与折返阈值使用
+    ball_speed_kmh: Optional[float] = None  # 仅标定后：台面平面投影速度
     ball_direction: Optional[tuple[float, float]] = None  # 单位向量
     ball_table_pos: Optional[tuple[float, float]] = None  # 透视校正后的球台坐标
+    frame_size: Optional[tuple[int, int]] = None  # (width, height), 用于未标定坐标归一化
+    calibrated: bool = False
 
 
 @dataclass
 class HitEvent:
-    """击球事件"""
+    """一次球台半区跨越对应的击球记录。
+
+    板数仍由跨区计数器决定；这里只描述「第 N 板是谁打的」。
+    ``board_index`` 从 1 起，与 ``CrossingResult.board_count`` 对齐。
+    """
     frame_idx: int
     timestamp: float
     ball_pos: tuple[float, float]
-    # 击球者
-    hitter_side: str  # "left" / "right"
-    # 关节角度快照
+    hitter_side: str  # "left" / "right" / "unknown"
     arm_angles: dict
-    # 击球类型推断
     hit_type: str = "unknown"  # "drive" (撞击) / "spin" (摩擦) / "unknown"
     confidence: float = 0.0
+    board_index: int = 0
+    ball_speed: float = 0.0
+    ball_speed_kmh: Optional[float] = None
+    table_pos: Optional[tuple[float, float]] = None
+    landing_pos: Optional[tuple[float, float]] = None
+    placement: Optional[str] = None
+    placement_kind: Optional[str] = None  # "net" / "bounce"
+    calibrated: bool = False
+
+    def to_dict(self) -> dict:
+        """API / 前端共用的可序列化结构，保留 side/type 别名。"""
+        angles = {}
+        for key, value in (self.arm_angles or {}).items():
+            number = _finite_float(value)
+            if number is not None:
+                angles[str(key)] = round(number, 1)
+        ball_pos = None
+        if self.ball_pos is not None:
+            x = _finite_float(self.ball_pos[0])
+            y = _finite_float(self.ball_pos[1])
+            if x is not None and y is not None:
+                ball_pos = [round(x, 1), round(y, 1)]
+        speed = _finite_float(self.ball_speed) or 0.0
+        kmh = _finite_float(self.ball_speed_kmh)
+        return {
+            "board_index": int(self.board_index),
+            "frame_idx": int(self.frame_idx),
+            "timestamp": round(float(self.timestamp), 3),
+            "hitter_side": self.hitter_side,
+            "side": self.hitter_side,
+            "hit_type": self.hit_type,
+            "type": self.hit_type,
+            "ball_speed": round(speed, 1),
+            "ball_speed_kmh": round(kmh, 1) if kmh is not None else None,
+            "speed_unit": "km/h" if self.calibrated else "px/f",
+            "table_pos": _serialize_table_point(self.table_pos),
+            "landing_pos": _serialize_table_point(self.landing_pos),
+            "placement": self.placement,
+            "placement_kind": self.placement_kind,
+            "calibrated": bool(self.calibrated),
+            "ball_pos": ball_pos,
+            "arm_angles": angles,
+            "confidence": round(float(self.confidence or 0.0), 3),
+        }
+
+
+def _serialize_table_point(point) -> list[float] | None:
+    if point is None:
+        return None
+    x = _finite_float(point[0])
+    y = _finite_float(point[1])
+    if x is None or y is None:
+        return None
+    return [round(x, 3), round(y, 3)]
+
+
+def apply_ball_kinematics(hit: HitEvent, frame: FrameData) -> HitEvent:
+    """把当前帧的像素速度、标定后 km/h 和过网线路写进击球事件。"""
+    hit.ball_speed = float(frame.ball_speed or 0.0)
+    hit.calibrated = bool(frame.calibrated)
+    if frame.calibrated:
+        hit.ball_speed_kmh = frame.ball_speed_kmh
+        hit.table_pos = frame.ball_table_pos
+        hit.placement = net_placement_label(frame.ball_table_pos)
+        hit.placement_kind = "net" if hit.placement else None
+    else:
+        hit.ball_speed_kmh = None
+        hit.table_pos = None
+        hit.landing_pos = None
+        hit.placement = None
+        hit.placement_kind = None
+    return hit
 
 
 class DataAligner:
@@ -61,7 +145,7 @@ class DataAligner:
     3. 事件关联: 将折返点与击球动作帧匹配 -> 生成HitEvent
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, table_geometry: TableGeometry | None = None):
         self.ball_speed_threshold = config.get("ball_speed_threshold", 5.0)
         self.turning_point_window = config.get("turning_point_window", 5)
         self.hit_match_window = config.get("hit_match_window", 10)
@@ -71,14 +155,15 @@ class DataAligner:
         self.player_side_margin = table_config.get(
             "player_side_margin", config.get("player_side_margin", 0.15)
         )
-        self.table_geometry = TableGeometry.from_config(config)
+        self.table_geometry = table_geometry or TableGeometry.from_config(config)
         # 缓冲区需同时容纳: 折返点检测窗口 + 击球匹配窗口
         self._buffer_size = max(
             self.turning_point_window * 2 + 1,
             self.turning_point_window * 2 + self.hit_match_window * 2 + 1,
         )
         self._frame_buffer: list[FrameData] = []
-        self._ball_history: list[tuple[int, float, float]] = []  # (frame, x, y)
+        # (frame, timestamp, x, y, table_xy)；table_xy 仅在标定时有值
+        self._ball_history: list[tuple[int, float, float, float, tuple[float, float] | None]] = []
         self._processed_turning_points: set[int] = set()  # 已处理的折返点 (防重复)
         logger.info("DataAligner 初始化完成")
 
@@ -91,6 +176,7 @@ class DataAligner:
         persons: list[dict] = None,
         pose_landmarks: np.ndarray = None,
         arm_angles: dict = None,
+        frame_size: tuple[int, int] | None = None,
     ) -> FrameData:
         """
         添加一帧的多模态数据 (帧同步入口)
@@ -105,9 +191,18 @@ class DataAligner:
             persons=persons or [],
             pose_landmarks=pose_landmarks,
             arm_angles=arm_angles,
+            frame_size=frame_size,
+            calibrated=self.table_geometry.calibrated,
         )
         if ball_pos is not None:
             frame_data.ball_table_pos = self.table_geometry.transform_point(ball_pos)
+            if not self.table_geometry.calibrated and frame_size:
+                width, height = frame_size
+                if width > 0 and height > 0:
+                    frame_data.ball_table_pos = (
+                        frame_data.ball_table_pos[0] / width,
+                        frame_data.ball_table_pos[1] / height,
+                    )
 
         # 计算球速与方向
         self._update_ball_motion(frame_data)
@@ -124,14 +219,21 @@ class DataAligner:
             return
 
         x, y = frame_data.ball_pos
-        self._ball_history.append((frame_data.frame_idx, x, y))
+        table_xy = None
+        if self.table_geometry.calibrated and frame_data.ball_table_pos is not None:
+            tx, ty = frame_data.ball_table_pos
+            if np.isfinite(tx) and np.isfinite(ty):
+                table_xy = (float(tx), float(ty))
+        self._ball_history.append(
+            (frame_data.frame_idx, frame_data.timestamp, x, y, table_xy)
+        )
 
         # 保留最近5帧
         if len(self._ball_history) > 5:
             self._ball_history.pop(0)
 
         if len(self._ball_history) >= 2:
-            prev_frame, prev_x, prev_y = self._ball_history[-2]
+            prev_frame, prev_ts, prev_x, prev_y, prev_table = self._ball_history[-2]
             dx = x - prev_x
             dy = y - prev_y
             frame_diff = max(frame_data.frame_idx - prev_frame, 1)
@@ -140,6 +242,11 @@ class DataAligner:
             if frame_data.ball_speed > 0:
                 frame_data.ball_direction = (dx / np.sqrt(dx**2 + dy**2 + 1e-8),
                                              dy / np.sqrt(dx**2 + dy**2 + 1e-8))
+
+            if table_xy is not None and prev_table is not None:
+                frame_data.ball_speed_kmh = table_speed_kmh(
+                    prev_table, table_xy, frame_data.timestamp - prev_ts
+                )
 
     def detect_turning_points(self) -> list[int]:
         """
@@ -248,14 +355,17 @@ class DataAligner:
                         candidates,
                         key=lambda frame: abs(frame.frame_idx - tp_frame_idx),
                     )
-                    events.append(HitEvent(
-                        frame_idx=tp_frame_idx,
-                        timestamp=best_frame.timestamp,
-                        ball_pos=best_frame.ball_pos,
-                        hitter_side="unknown",
-                        arm_angles={},
-                        hit_type="unknown",
-                        confidence=0.5,
+                    events.append(apply_ball_kinematics(
+                        HitEvent(
+                            frame_idx=tp_frame_idx,
+                            timestamp=best_frame.timestamp,
+                            ball_pos=best_frame.ball_pos,
+                            hitter_side="unknown",
+                            arm_angles={},
+                            hit_type="unknown",
+                            confidence=0.5,
+                        ),
+                        best_frame,
                     ))
                 continue
 
@@ -308,14 +418,17 @@ class DataAligner:
             person_arm_angles = best_person.get("arm_angles") or best_frame.arm_angles
             hit_type = self._infer_hit_type(person_arm_angles)
 
-            event = HitEvent(
-                frame_idx=tp_frame_idx,
-                timestamp=best_frame.timestamp,
-                ball_pos=best_frame.ball_pos,
-                hitter_side=hitter_side,
-                arm_angles=person_arm_angles or {},
-                hit_type=hit_type,
-                confidence=float(min(best_score, 1.0)),
+            event = apply_ball_kinematics(
+                HitEvent(
+                    frame_idx=tp_frame_idx,
+                    timestamp=best_frame.timestamp,
+                    ball_pos=best_frame.ball_pos,
+                    hitter_side=hitter_side,
+                    arm_angles=person_arm_angles or {},
+                    hit_type=hit_type,
+                    confidence=float(min(best_score, 1.0)),
+                ),
+                best_frame,
             )
             events.append(event)
             logger.debug(

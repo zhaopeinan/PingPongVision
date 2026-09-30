@@ -246,6 +246,33 @@ def test_tracknet_center_region_rejects_outside_candidate(cpu_device):
     assert 25 <= position[0] <= 75
 
 
+def test_tracknet_rejects_stationary_candidate_after_threshold(cpu_device):
+    """连续静止的白色背景物不应持续伪装成乒乓球。"""
+    tracker = TrackNetTracker(
+        cpu_device,
+        {
+            "peak_threshold": 0.3,
+            "stationary_filter": {
+                "max_frames": 3,
+                "max_displacement": 1.0,
+                "rejection_radius": 8.0,
+            },
+        },
+    )
+    tracker._loaded = True
+    tracker._backend = "pytorch"
+    heatmap = np.zeros((1, 1, 10, 10), dtype=np.float32)
+    heatmap[0, 0, 5, 5] = 1.0
+    tracker.infer = lambda frame: heatmap
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    assert tracker.detect_ball_position(frame) is not None
+    assert tracker.detect_ball_position(frame) is not None
+    assert tracker.detect_ball_position(frame) is None
+    # 被判定为静止误检的位置不会在后续帧中重新产生可信球点。
+    assert tracker.detect_ball_position(frame) is None
+
+
 def test_tracknet_allows_outside_candidate_after_rally_end(cpu_device):
     """只有回合结束通知后的恢复窗口允许球离开中间走廊。"""
     tracker = TrackNetTracker(

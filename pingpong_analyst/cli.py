@@ -31,7 +31,24 @@ def cmd_analyze(args):
             f"| 板数: {seg.board_count} | 时长: {seg.duration:.1f}s"
         )
         for hit in seg.hit_events:
-            print(f"    - @{hit.timestamp:.1f}s 侧:{hit.hitter_side} 类型:{hit.hit_type}")
+            elbow = ""
+            angles = hit.arm_angles or {}
+            right = angles.get("right_elbow_angle")
+            left = angles.get("left_elbow_angle")
+            if right is not None:
+                elbow = f" 右肘{right:.0f}°"
+            elif left is not None:
+                elbow = f" 左肘{left:.0f}°"
+            speed = (
+                f"{hit.ball_speed_kmh:.0f}km/h"
+                if hit.ball_speed_kmh is not None
+                else f"{hit.ball_speed:.0f}px/f"
+            )
+            placement = f" {hit.placement}" if hit.placement else ""
+            print(
+                f"    - 第{hit.board_index}板 @{hit.timestamp:.1f}s "
+                f"{hit.hitter_side} {speed}{placement} {hit.hit_type}{elbow}"
+            )
 
 
 def cmd_clip(args):

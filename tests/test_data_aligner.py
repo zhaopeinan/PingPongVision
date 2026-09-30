@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from pingpong_analyst.core.data_aligner import DataAligner, FrameData, HitEvent
+from pingpong_analyst.core.table_geometry import TableGeometry
 
 
 @pytest.fixture
@@ -29,14 +30,44 @@ def test_add_frame_basic(aligner):
     assert len(fd.persons) == 1
 
 
-def test_ball_speed_calculation(aligner):
-    """测试球速计算"""
-    # 帧0: 球在 (100, 200)
+def test_uncalibrated_ball_position_is_normalized_for_crossing(aligner):
+    fd = aligner.add_frame(
+        frame_idx=0,
+        timestamp=0.0,
+        ball_pos=(320, 180),
+        frame_size=(640, 360),
+    )
+    assert fd.ball_table_pos == pytest.approx((0.5, 0.5))
+
+
+def test_uncalibrated_ball_speed_has_no_kmh(aligner):
     aligner.add_frame(frame_idx=0, timestamp=0.0, ball_pos=(100, 200))
-    # 帧1: 球移动到 (110, 200) -> 速度=10
     fd = aligner.add_frame(frame_idx=1, timestamp=0.033, ball_pos=(110, 200))
     assert fd.ball_speed == pytest.approx(10.0, abs=0.1)
     assert fd.ball_direction is not None
+    assert fd.ball_speed_kmh is None
+    assert fd.calibrated is False
+
+
+def test_calibrated_ball_speed_uses_ittf_table_axes():
+    """标定后用 2.74m × 1.525m 换算，而不是只用宽度。"""
+    geometry = TableGeometry([[0, 0], [274, 0], [274, 152.5], [0, 152.5]])
+    aligner = DataAligner({"ball_speed_threshold": 5.0}, table_geometry=geometry)
+    aligner.add_frame(frame_idx=0, timestamp=0.0, ball_pos=(0, 76.25))
+    fd = aligner.add_frame(frame_idx=1, timestamp=0.1, ball_pos=(274, 76.25))
+    assert fd.calibrated is True
+    assert fd.ball_speed_kmh == pytest.approx(2.74 / 0.1 * 3.6, rel=1e-3)
+    # 像素速度仍保留，供折返/跨区阈值使用
+    assert fd.ball_speed == pytest.approx(274.0, abs=1.0)
+
+
+def test_calibrated_width_axis_uses_1525mm():
+    geometry = TableGeometry([[0, 0], [274, 0], [274, 152.5], [0, 152.5]])
+    aligner = DataAligner({"ball_speed_threshold": 5.0}, table_geometry=geometry)
+    aligner.add_frame(frame_idx=0, timestamp=0.0, ball_pos=(137, 0))
+    fd = aligner.add_frame(frame_idx=1, timestamp=1.0, ball_pos=(137, 152.5))
+    assert fd.ball_speed_kmh == pytest.approx(1.525 * 3.6, rel=1e-3)
+
 
 
 def test_ball_speed_no_movement(aligner):

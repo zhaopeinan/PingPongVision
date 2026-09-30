@@ -1,6 +1,7 @@
 """核心业务逻辑模块"""
 from .data_aligner import DataAligner, FrameData, HitEvent
 from .rally_detector import RallyDetector, RallyState, RallySegment
+from .ball_crossing import BallCrossingCounter, CrossingResult
 from .clip_exporter import ClipExporter
 
 __all__ = [
@@ -10,6 +11,8 @@ __all__ = [
     "RallyDetector",
     "RallyState",
     "RallySegment",
+    "BallCrossingCounter",
+    "CrossingResult",
     "ClipExporter",
     "ActionAnalyzer",
     "VideoAnalyzer",

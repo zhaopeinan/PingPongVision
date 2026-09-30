@@ -6,6 +6,7 @@ TrackNet 小球追踪器封装
 """
 from collections import deque
 from typing import Any
+import threading
 
 import cv2
 import numpy as np
@@ -29,8 +30,24 @@ class TrackNetTracker(BaseModelWrapper):
             config.get("background_mode", config.get("bg_mode", "")) or ""
         )
         self._frame_buffer: deque[np.ndarray] = deque(maxlen=self.temporal_frames)
+        self._frame_buffer_gpu: deque = deque(maxlen=self.temporal_frames)
+        self._background_gpu = None
+        self._use_gpu_preprocess = False
         self._background_frame: np.ndarray | None = None
         self._prev_ball_pos: tuple[float, float] | None = None
+        stationary_cfg = config.get("stationary_filter", {}) or {}
+        self._stationary_filter_enabled = bool(stationary_cfg.get("enabled", True))
+        self._stationary_max_frames = max(2, int(stationary_cfg.get("max_frames", 8)))
+        self._stationary_max_displacement = max(
+            0.0, float(stationary_cfg.get("max_displacement", 2.0))
+        )
+        self._stationary_rejection_radius = max(
+            self._stationary_max_displacement * 2,
+            float(stationary_cfg.get("rejection_radius", 12.0)),
+        )
+        self._last_confirmed_pos: tuple[float, float] | None = None
+        self._stationary_count = 0
+        self._rejected_static_pos: tuple[float, float] | None = None
         # 比赛中球绝大多数时间位于两名选手之间。用归一化区域做候选
         # 过滤，避免把地面、灯光和场边白色物体当成球。
         center_region = config.get("center_region", {}) or {}
@@ -66,9 +83,17 @@ class TrackNetTracker(BaseModelWrapper):
         engine_path = resolve_project_path(self.config.get("engine"))
         weights_path = resolve_project_path(self.config.get("weights"))
         version = self.config.get("version", "v2")
+        batch_size = int(self.config.get("batch_size", 1))
 
-        # 优先 TensorRT (服务器)
-        if self.device_info.device_type == DeviceType.TENSORRT and engine_path:
+        # batch_size > 1 时强制 PyTorch（TensorRT engine 以 batch=1 导出）
+        prefer_pytorch = batch_size > 1
+
+        # 优先 TensorRT (服务器)，但 batch_size>1 时跳过
+        if (
+            not prefer_pytorch
+            and self.device_info.device_type == DeviceType.TENSORRT
+            and engine_path
+        ):
             loaded = self._load_tensorrt(str(engine_path), version)
             if loaded:
                 self._loaded = True
@@ -79,6 +104,10 @@ class TrackNetTracker(BaseModelWrapper):
             loaded = self._load_pytorch(str(weights_path), version)
             if loaded:
                 self._loaded = True
+                # GPU 设备启用 GPU 预处理
+                if self.device_info.device_type in (DeviceType.CUDA, DeviceType.TENSORRT, DeviceType.MPS):
+                    self._use_gpu_preprocess = True
+                    logger.info("TrackNet: 启用 GPU 预处理 (resize/cvtColor/normalize 全在 GPU)")
                 return True
 
         # 回退: 纯CV运动检测 (macOS测试用)
@@ -282,6 +311,7 @@ class TrackNetTracker(BaseModelWrapper):
         """
         self._prev_frame = None
         self._prev_ball_pos = None
+        self._reset_stationary_filter()
         self._ball_velocity = (0, 0)  # 球的速度估计
         self._ball_history = []  # 球位置历史
         self._miss_count = 0  # 连续丢失次数
@@ -300,6 +330,65 @@ class TrackNetTracker(BaseModelWrapper):
         # 通过距离连续性重新接回球轨迹。
         self._prev_ball_pos = None
         self._ball_velocity = (0, 0)
+        self._reset_stationary_filter()
+        self._frame_buffer_gpu.clear()
+
+    def _reset_stationary_filter(self, clear_rejection: bool = True) -> None:
+        """Reset static-candidate state between tracks or scoring segments."""
+        self._last_confirmed_pos = None
+        self._stationary_count = 0
+        if clear_rejection:
+            self._rejected_static_pos = None
+
+    def _filter_rejected_static_candidates(self, candidates: list[tuple]) -> list[tuple]:
+        """Ignore the location of a candidate already identified as static."""
+        if not self._rejected_static_pos:
+            return candidates
+        rx, ry = self._rejected_static_pos
+        moving = [
+            candidate
+            for candidate in candidates
+            if ((candidate[0] - rx) ** 2 + (candidate[1] - ry) ** 2) ** 0.5
+            > self._stationary_rejection_radius
+        ]
+        if moving:
+            self._rejected_static_pos = None
+        return moving
+
+    def _register_confirmed_position(self, position: tuple[float, float]) -> tuple[float, float] | None:
+        """Accept a candidate only while it exhibits enough frame-to-frame motion."""
+        if not self._stationary_filter_enabled:
+            return position
+
+        if self._last_confirmed_pos is None:
+            self._stationary_count = 1
+        else:
+            displacement = (
+                (position[0] - self._last_confirmed_pos[0]) ** 2
+                + (position[1] - self._last_confirmed_pos[1]) ** 2
+            ) ** 0.5
+            if displacement <= self._stationary_max_displacement:
+                self._stationary_count += 1
+            else:
+                self._stationary_count = 1
+
+        self._last_confirmed_pos = position
+        if self._stationary_count < self._stationary_max_frames:
+            return position
+
+        logger.debug(
+            "静止候选被过滤: 连续 {} 帧位移 <= {:.2f}px, 位置=({}, {})",
+            self._stationary_count,
+            self._stationary_max_displacement,
+            round(position[0], 1),
+            round(position[1], 1),
+        )
+        self._rejected_static_pos = position
+        self._prev_ball_pos = None
+        self._ball_velocity = (0, 0)
+        self._last_confirmed_pos = None
+        self._stationary_count = 0
+        return None
 
     def _is_ball_position_allowed(self, x: float, y: float, width: int, height: int) -> bool:
         if not self._center_region["enabled"] or self._allow_outside_current:
@@ -309,7 +398,7 @@ class TrackNetTracker(BaseModelWrapper):
             and self._center_region["y_min"] * height <= y <= self._center_region["y_max"] * height
         )
 
-    def prepare_background(self, video_path: str) -> bool:
+    def prepare_background(self, video_path: str, cancel_event: threading.Event | None = None) -> bool:
         """从视频采样生成 TrackNetV3 concat 所需的全局中值背景。"""
         if self.background_mode != "concat" or self._backend not in {"pytorch", "tensorrt"}:
             return False
@@ -319,13 +408,25 @@ class TrackNetTracker(BaseModelWrapper):
                 width=self.config.get("input_width", 512),
                 height=self.config.get("input_height", 288),
                 max_samples=max(8, int(self.config.get("background_samples", 180))),
+                cancel_event=cancel_event,
             )
+        except InterruptedError:
+            logger.info("背景采样被取消")
+            return False
         except ValueError as exc:
             logger.warning(str(exc))
             return False
-        logger.info(
-            f"shape={self._background_frame.shape}"
-        )
+
+        # 预处理背景到 GPU（一次性的，之后每帧复用）
+        if self._use_gpu_preprocess:
+            import torch
+            bg = self._background_frame  # (H, W, 3) BGR uint8
+            bg_t = torch.from_numpy(bg).to(self._device)
+            bg_t = bg_t.permute(2, 0, 1).float()[[2, 1, 0], :, :]  # BGR→RGB
+            bg_t = bg_t / 255.0
+            self._background_gpu = bg_t  # (3, H, W) float32 RGB normalized
+
+        logger.info(f"shape={self._background_frame.shape}")
         return True
 
     def infer(self, frame: np.ndarray) -> Any:
@@ -343,6 +444,28 @@ class TrackNetTracker(BaseModelWrapper):
             return self._infer_pytorch(frame)
         raise RuntimeError(f"未知 TrackNet backend: {self._backend}")
 
+    def infer_batch(self, frames: list[np.ndarray]) -> list[Any]:
+        """批量推理：将多帧的时序窗口堆叠为一个 batch 送入 GPU。
+
+        对于 PyTorch 后端，真正利用 batch 并行；对于 TensorRT 和 CV 回退，
+        退化为逐帧调用（接口兼容）。
+        """
+        if not self._loaded:
+            raise RuntimeError("模型未加载")
+
+        if self._backend == "cv_fallback":
+            return [self._infer_cv(f) for f in frames]
+
+        if self._backend == "pytorch":
+            return self._infer_pytorch_batch(frames)
+
+        # TensorRT 不支持动态 batch，退化为逐帧
+        results = []
+        for f in frames:
+            self._frame_buffer.append(f.copy())
+            results.append(self._infer_tensorrt(f))
+        return results
+
     def _prepare_temporal_input(self, frame: np.ndarray) -> np.ndarray:
         """将最近帧整理成 NCHW 的连续帧输入。"""
         frames = list(self._frame_buffer)
@@ -358,6 +481,66 @@ class TrackNetTracker(BaseModelWrapper):
         elif stacked.shape[0] > self.input_channels:
             stacked = stacked[-self.input_channels:]
         return np.ascontiguousarray(stacked[np.newaxis, ...])
+
+    # ------------------------------------------------------------------
+    # GPU 预处理：resize / BGR→RGB / normalize 全部在 GPU 上完成
+    # 每帧只预处理一次，存入 _frame_buffer_gpu，避免重复 resize
+    # ------------------------------------------------------------------
+
+    def _preprocess_frame_gpu(self, frame: np.ndarray):
+        """将单帧传输到 GPU 并完成 resize/cvtColor/normalize，返回 (3, H, W) 张量。"""
+        import torch
+        import torch.nn.functional as F
+
+        # (H, W, 3) BGR uint8 → GPU
+        t = torch.from_numpy(frame).to(self._device, non_blocking=True)
+        t = t.permute(2, 0, 1).float()  # (3, H, W)
+        t = t[[2, 1, 0], :, :]  # BGR → RGB
+        # Resize on GPU (bilinear 兼容 MPS/CUDA；area 在 MPS 上不支持非整除尺寸)
+        t = F.interpolate(
+            t.unsqueeze(0),
+            size=(self.config.get("input_height", 288), self.config.get("input_width", 512)),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+        t = t / 255.0
+        return t
+
+    def _prepare_temporal_input_gpu(self, frame: np.ndarray):
+        """GPU 全流程：预处理当前帧 → 滑入缓冲区 → 拼接时序窗口 → 返回 (1, C, H, W) GPU 张量。"""
+        import torch
+
+        preprocessed = self._preprocess_frame_gpu(frame)
+        self._frame_buffer_gpu.append(preprocessed)
+
+        temporal = list(self._frame_buffer_gpu)
+        while len(temporal) < self.temporal_frames:
+            temporal.insert(0, temporal[0])
+
+        channels = []
+        if self.background_mode == "concat" and self._background_gpu is not None:
+            channels.append(self._background_gpu)
+        channels.extend(temporal)
+
+        stacked = torch.cat(channels, dim=0)  # (C, H, W)
+
+        # 通道数对齐
+        if stacked.shape[0] < self.input_channels:
+            needed = self.input_channels - stacked.shape[0]
+            repeats = (needed + 2) // 3
+            padding = stacked[-3:].repeat(repeats, 1, 1)[:needed]
+            stacked = torch.cat([stacked, padding], dim=0)
+        elif stacked.shape[0] > self.input_channels:
+            stacked = stacked[-self.input_channels:]
+
+        return stacked.unsqueeze(0)  # (1, C, H, W)
+
+    def _prepare_temporal_input_gpu_batch(self, frames: list[np.ndarray]):
+        """批量 GPU 预处理：返回 (B, C, H, W) GPU 张量。"""
+        import torch
+
+        batch_inputs = [self._prepare_temporal_input_gpu(f) for f in frames]
+        return torch.cat(batch_inputs, dim=0)  # (B, C, H, W)
 
     def _infer_tensorrt(self, frame: np.ndarray) -> np.ndarray:
         """TensorRT推理, 返回热力图"""
@@ -380,13 +563,14 @@ class TrackNetTracker(BaseModelWrapper):
     def _infer_pytorch(self, frame: np.ndarray) -> np.ndarray:
         """PyTorch推理, 返回热力图"""
         import torch
-        import cv2
 
-        input_w = self.config.get("input_width", 640)
-        input_h = self.config.get("input_height", 360)
-
-        batched = self._prepare_temporal_input(frame)
-        tensor = torch.from_numpy(batched).to(self._device)
+        if self._use_gpu_preprocess:
+            tensor = self._prepare_temporal_input_gpu(frame)
+            self._frame_buffer.append(frame.copy())  # 保持 numpy buffer 同步
+        else:
+            self._frame_buffer.append(frame.copy())
+            batched = self._prepare_temporal_input(frame)
+            tensor = torch.from_numpy(batched).to(self._device)
 
         if self._half:
             tensor = tensor.half()
@@ -395,6 +579,31 @@ class TrackNetTracker(BaseModelWrapper):
             heatmap = self._model(tensor)
 
         return heatmap.cpu().float().numpy().squeeze()
+
+    def _infer_pytorch_batch(self, frames: list[np.ndarray]) -> list[np.ndarray]:
+        """PyTorch 批量推理：GPU 预处理 + 批量前向。"""
+        import torch
+
+        if self._use_gpu_preprocess:
+            tensor = self._prepare_temporal_input_gpu_batch(frames)
+            for f in frames:
+                self._frame_buffer.append(f.copy())  # 保持 numpy buffer 同步
+        else:
+            batch_inputs = []
+            for f in frames:
+                self._frame_buffer.append(f.copy())
+                batch_inputs.append(self._prepare_temporal_input(f))
+            batched = np.concatenate(batch_inputs, axis=0)
+            tensor = torch.from_numpy(batched).to(self._device)
+
+        if self._half:
+            tensor = tensor.half()
+
+        with torch.no_grad():
+            heatmaps = self._model(tensor)
+
+        results = heatmaps.cpu().float().numpy()
+        return [results[i] for i in range(len(frames))]
 
     def _infer_cv(self, frame: np.ndarray) -> np.ndarray:
         """纯CV球检测: 帧差法+亮度+轨迹跟踪
@@ -441,6 +650,7 @@ class TrackNetTracker(BaseModelWrapper):
             for candidate in candidates
             if self._is_ball_position_allowed(candidate[0], candidate[1], w, h)
         ]
+        candidates = self._filter_rejected_static_candidates(candidates)
 
         # 3. 轨迹跟踪选球
         best = None
@@ -525,6 +735,43 @@ class TrackNetTracker(BaseModelWrapper):
             self._prev_ball_pos = None
 
         heatmap = self.infer(frame)
+        return self._postprocess_heatmap(heatmap, frame_width, frame_height)
+
+    def detect_ball_positions_batch(
+        self, frames: list[np.ndarray]
+    ) -> list[tuple[float, float] | None]:
+        """批量检测球位置：先批量推理热力图，再逐帧后处理（保持状态连续性）。"""
+        if not frames:
+            return []
+
+        # 预处理状态：批量推理前先更新 outside_recovery 标志
+        results: list[tuple[float, float] | None] = []
+        heatmaps = self.infer_batch(frames)
+
+        for i, (frame, heatmap) in enumerate(zip(frames, heatmaps)):
+            self._allow_outside_current = self._outside_recovery_frames > 0
+            if self._outside_recovery_frames > 0:
+                self._outside_recovery_frames -= 1
+
+            frame_height, frame_width = frame.shape[:2]
+            if (
+                self._prev_ball_pos is not None
+                and not self._allow_outside_current
+                and not self._is_ball_position_allowed(
+                    self._prev_ball_pos[0], self._prev_ball_pos[1], frame_width, frame_height
+                )
+            ):
+                self._prev_ball_pos = None
+
+            pos = self._postprocess_heatmap(heatmap, frame_width, frame_height)
+            results.append(pos)
+
+        return results
+
+    def _postprocess_heatmap(
+        self, heatmap: Any, frame_width: int, frame_height: int
+    ) -> tuple[float, float] | None:
+        """从热力图中提取球位置（共享的单帧后处理逻辑）。"""
         heatmap = np.asarray(heatmap)
 
         # TrackNetV3 输出 [N, T, H, W] 或 [T, H, W]，在线模式取窗口最后一帧。
@@ -538,12 +785,14 @@ class TrackNetTracker(BaseModelWrapper):
         threshold = self.config.get("peak_threshold", 0.3)
 
         if heatmap.max() < threshold:
+            self._reset_stationary_filter(clear_rejection=False)
             return None
 
         # 找所有候选峰值
         binary = (heatmap > threshold).astype(np.uint8)
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
         if num_labels <= 1:
+            self._reset_stationary_filter(clear_rejection=False)
             return None
 
         heatmap_height, heatmap_width = heatmap.shape
@@ -561,6 +810,12 @@ class TrackNetTracker(BaseModelWrapper):
                 candidates.append((x, y, peak_val))
 
         if not candidates:
+            self._reset_stationary_filter(clear_rejection=False)
+            return None
+
+        candidates = self._filter_rejected_static_candidates(candidates)
+        if not candidates:
+            self._reset_stationary_filter(clear_rejection=False)
             return None
 
         # 轨迹连续性: 如果有上一帧位置，优先选最近的候选
@@ -574,14 +829,14 @@ class TrackNetTracker(BaseModelWrapper):
                 near.sort(key=lambda n: n[1])
                 best = near[0][0]
                 self._prev_ball_pos = (best[0], best[1])
-                return (best[0], best[1])
+                return self._register_confirmed_position((best[0], best[1]))
 
         # 否则取峰值最强的
         candidates.sort(key=lambda c: c[2], reverse=True)
         best = candidates[0]
         self._prev_ball_pos = (best[0], best[1])
         self._allow_outside_current = False
-        return (best[0], best[1])
+        return self._register_confirmed_position((best[0], best[1]))
 
     def unload(self):
         """释放模型并清理跨视频的 temporal buffer。"""
@@ -589,5 +844,6 @@ class TrackNetTracker(BaseModelWrapper):
         self._frame_buffer.clear()
         self._background_frame = None
         self._prev_ball_pos = None
+        self._reset_stationary_filter()
         self._outside_recovery_frames = 0
         self._allow_outside_current = False

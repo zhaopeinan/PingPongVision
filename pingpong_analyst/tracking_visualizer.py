@@ -24,6 +24,8 @@ from .utils.config import get_config
 from .models import YOLOPoseDetector, MediaPipePoseAnalyzer, TrackNetTracker
 from .core.data_aligner import DataAligner
 from .core.rally_detector import RallyDetector, RallyState
+from .core.table_calibration import TableCalibration
+from .core.table_geometry import TableGeometry
 
 
 # COCO 17关键点骨骼连接 (YOLO-Pose)
@@ -55,6 +57,8 @@ class TrackingVisualizer:
         config_path: str = None,
         mode: str = "rally",
         tracknet_model_path: str | None = None,
+        table_calibration: TableCalibration | None = None,
+        no_crossing_timeout_seconds: float | None = None,
     ):
         if mode not in {"rally", "action"}:
             raise ValueError(f"未知追踪模式: {mode}")
@@ -67,12 +71,22 @@ class TrackingVisualizer:
         self._tracknet: TrackNetTracker | None = None
         self._mediapipe: MediaPipePoseAnalyzer | None = None
 
-        self.aligner = DataAligner(self.config.get("analysis", "rally", default={}))
-        self.rally_detector = RallyDetector(self.config.get("analysis", "rally", default={}))
+        rally_config = dict(self.config.get("analysis", "rally", default={}))
+        if no_crossing_timeout_seconds is not None:
+            rally_config["no_crossing_timeout_seconds"] = float(no_crossing_timeout_seconds)
+        table_geometry = (
+            TableGeometry.from_calibration(table_calibration)
+            if table_calibration is not None
+            else None
+        )
+        self._rally_config = rally_config
+        self._table_geometry = table_geometry
+        self.aligner = DataAligner(rally_config, table_geometry=table_geometry)
+        self.rally_detector = RallyDetector(rally_config)
 
         self._ball_trail: deque = deque(maxlen=30)  # 球轨迹拖尾
         self._hit_flash_frames: int = 0  # 击球闪光剩余帧数
-        self._board_count: int = 0  # 当前回合板数
+        self._board_count: int = 0  # 当前得分段板数
         self._frame_idx: int = 0
         self._person_filter: list[list[float]] | None = None  # 指定追踪的人物bbox列表
         self._tracking_warning: str | None = None
@@ -143,7 +157,7 @@ class TrackingVisualizer:
             self._tracknet = TrackNetTracker(self.device_info, tn_cfg)
             self._tracknet.load()
             if self._tracknet.is_cv_fallback:
-                self._tracking_warning = "TrackNet 权重不可用，已禁用可信球与回合计数"
+                self._tracking_warning = "TrackNet 权重不可用，已禁用可信球与板数计算"
                 _report(100, self._tracking_warning)
         else:
             mp_cfg = self.config.get("models", "yolo_pose", default={})
@@ -169,7 +183,7 @@ class TrackingVisualizer:
     def reset(self):
         """重置状态, 准备新视频"""
         self.aligner.reset()
-        self.rally_detector = RallyDetector(self.config.get("analysis", "rally", default={}))
+        self.rally_detector.reset()
         self._ball_trail.clear()
         self._hit_flash_frames = 0
         self._board_count = 0
@@ -225,17 +239,16 @@ class TrackingVisualizer:
             ball_confidence=1.0 if ball_pos else 0.0,
             persons=persons,
             arm_angles=arm_angles,
+            frame_size=(img.shape[1], img.shape[0]),
         )
 
-        if self.mode == "rally" and self._tracking_warning:
-            hit_events = []
-        else:
-            hit_events = self.aligner.match_hit_events(require_persons=self.mode == "action")
-        if hit_events:
-            self._hit_flash_frames = 8  # 闪光持续8帧
-            self._board_count += len(hit_events)
-
+        # 回合模式的板数由球跨区状态机计算，动作模式不运行板数逻辑。
+        hit_events = []
         completed_segment = self.rally_detector.update(frame_data, hit_events)
+        prev_boards = self._board_count
+        self._board_count = self.rally_detector.current_board_count if self.mode == "rally" else 0
+        if self.mode == "rally" and self._board_count > prev_boards:
+            self._hit_flash_frames = 8
         if completed_segment is not None and self._tracknet is not None:
             self._tracknet.notify_rally_end()
 
@@ -245,11 +258,14 @@ class TrackingVisualizer:
             self._hit_flash_frames -= 1
 
         # 6. HUD
+        kmh = frame_data.ball_speed_kmh
         metadata = {
             "frame": self._frame_idx,
             "timestamp": round(timestamp, 2),
             "ball_pos": [round(p, 1) for p in ball_pos] if ball_pos else None,
             "ball_speed": round(frame_data.ball_speed, 1),
+            "ball_speed_kmh": round(kmh, 1) if kmh is not None else None,
+            "calibrated": bool(frame_data.calibrated),
             "persons": len(persons),
             # 实时追踪要把当前进行中的回合也展示出来；视频结束后，
             # 未达到最小板数的回合仍会被离线结果过滤掉。
@@ -367,7 +383,11 @@ class TrackingVisualizer:
 
         # 左下角: 球速
         if meta["ball_pos"]:
-            ball_text = f"BALL  {meta['ball_speed']:.0f} px/f"
+            kmh = meta.get("ball_speed_kmh")
+            if meta.get("calibrated"):
+                ball_text = f"BALL  {kmh:.0f} km/h" if kmh is not None else "BALL  -- km/h"
+            else:
+                ball_text = f"BALL  {meta['ball_speed']:.0f} px/f"
             cv2.putText(img, ball_text, (12, h - 14),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_BALL, 1, cv2.LINE_AA)
 
@@ -388,6 +408,8 @@ def generate_mjpeg_stream(
     target_width: int = 960,
     mode: str = "rally",
     tracknet_model_path: str | None = None,
+    table_calibration: TableCalibration | None = None,
+    no_crossing_timeout_seconds: float | None = None,
 ) -> Generator[bytes, None, None]:
     """
     生成 MJPEG 流
@@ -399,6 +421,8 @@ def generate_mjpeg_stream(
         config_path,
         mode=mode,
         tracknet_model_path=tracknet_model_path,
+        table_calibration=table_calibration,
+        no_crossing_timeout_seconds=no_crossing_timeout_seconds,
     )
     visualizer.load_models()
     visualizer.prepare_background(video_path)
@@ -415,13 +439,13 @@ def generate_mjpeg_stream(
 
             img = frame.to_ndarray(format="bgr24")
 
-            # 缩放以减少带宽
-            h, w = img.shape[:2]
+            annotated, meta = visualizer.process_frame(img, fps)
+            # Calibration and ball coordinates use source-frame pixels. Resize
+            # only after inference and drawing for the outgoing stream.
+            h, w = annotated.shape[:2]
             if w > target_width:
                 scale = target_width / w
-                img = cv2.resize(img, (target_width, int(h * scale)))
-
-            annotated, meta = visualizer.process_frame(img, fps)
+                annotated = cv2.resize(annotated, (target_width, int(h * scale)))
 
             # 编码为 JPEG
             _, jpeg_buf = cv2.imencode(".jpg", annotated,

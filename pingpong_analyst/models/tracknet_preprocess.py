@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import cv2
 import numpy as np
@@ -72,6 +73,7 @@ class TrackNetPreprocessor:
         width: int,
         height: int,
         max_samples: int = 180,
+        cancel_event: threading.Event | None = None,
     ) -> np.ndarray:
         """Return a resized BGR uint8 median background sampled from a video."""
         cap = cv2.VideoCapture(str(video_path))
@@ -85,6 +87,8 @@ class TrackNetPreprocessor:
         frame_index = 0
         try:
             while len(samples) < sample_count:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("背景采样被取消")
                 success, image = cap.read()
                 if not success:
                     break

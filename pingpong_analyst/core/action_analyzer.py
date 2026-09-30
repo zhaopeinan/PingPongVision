@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -16,6 +16,10 @@ from loguru import logger
 from ..models import MediaPipePoseAnalyzer, YOLOPoseDetector
 from ..utils.config import get_config
 from ..utils.device_manager import DeviceManager
+from .data_aligner import DataAligner
+from .hit_enrichment import select_hitter
+
+HIT_MATCH_SECONDS = 0.25
 
 
 def _json_value(value: Any):
@@ -29,6 +33,63 @@ def _json_value(value: Any):
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
+
+
+def compact_person(person: dict) -> dict:
+    """去掉关键点和 3D 坐标，只保留报告需要的身份和角度。"""
+    return {
+        "track_id": person.get("track_id"),
+        "identity": person.get("identity", "unknown"),
+        "identity_confidence": person.get("identity_confidence", 0.0),
+        "conf": float(person.get("conf", 0.0) or 0.0),
+        "bbox": _json_value(person.get("bbox")),
+        "arm_angles": _json_value(person.get("arm_angles") or {}),
+        "body_metrics": _json_value(person.get("body_metrics") or {}),
+    }
+
+
+def bind_hits_to_pose(
+    hits: list[dict],
+    timestamp: float,
+    persons: list[dict],
+    frame_size: tuple[int, int],
+    window: float = HIT_MATCH_SECONDS,
+) -> None:
+    """把当前帧姿态挂到时间最接近的击球事件上（原地更新）。"""
+    if not persons:
+        return
+    for hit in hits:
+        target = float(hit.get("timestamp") or 0.0)
+        delta = abs(timestamp - target)
+        if delta > window or delta > float(hit.get("_best_dt", window)):
+            continue
+        side = hit.get("hitter_side") or hit.get("side") or "unknown"
+        chosen = select_hitter(
+            persons, side, frame_size=frame_size
+        ) if side in {"left", "right"} else None
+        if chosen is None and persons:
+            chosen = max(persons, key=lambda item: float(item.get("conf", 0.0) or 0.0))
+        hit["_best_dt"] = delta
+        hit["pose"] = compact_person(chosen) if chosen else None
+        angles = (chosen or {}).get("arm_angles") or {}
+        if angles and not hit.get("arm_angles"):
+            hit["arm_angles"] = _json_value(angles)
+            hit_type = DataAligner._infer_hit_type(angles)
+            hit["hit_type"] = hit_type
+            hit["type"] = hit_type
+
+
+def finalize_hit_events(hits: list[dict]) -> list[dict]:
+    """去掉内部匹配字段，输出可序列化击球快照。"""
+    payload = []
+    for hit in hits:
+        item = {
+            key: value
+            for key, value in hit.items()
+            if not str(key).startswith("_")
+        }
+        payload.append(_json_value(item))
+    return payload
 
 
 class AppearanceIdentityTracker:
@@ -183,8 +244,16 @@ class ActionAnalyzer:
         max_frames: int = -1,
         start_frame: int = 0,
         end_frame: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        cancel_event=None,
+        include_frames: bool = False,
+        hit_events: list[dict] | None = None,
     ) -> dict:
-        """分析视频，返回可直接 JSON 序列化的逐帧结果和汇总。"""
+        """分析视频，返回摘要、击球快照；默认不返回逐帧关键点。
+
+        ``hit_events`` 的 timestamp 必须落在这段视频自己的时间轴上
+        （分析得分段剪辑时应先扣除 clip 起始时间）。
+        """
         if not Path(video_path).exists():
             raise FileNotFoundError(f"视频不存在: {video_path}")
         self.load_models()
@@ -194,7 +263,17 @@ class ActionAnalyzer:
         container = av.open(video_path)
         stream = container.streams.video[0]
         fps = float(stream.average_rate or 30.0)
+        estimated_frames = int(stream.frames or 0)
+        if estimated_frames <= 0 and stream.duration and stream.time_base:
+            estimated_frames = int(float(stream.duration * stream.time_base) * fps)
+        estimated_frames = max(0, estimated_frames - start_frame)
+        if end_frame is not None:
+            estimated_frames = min(estimated_frames, max(0, end_frame - start_frame + 1))
+        if max_frames > 0:
+            estimated_frames = min(estimated_frames, max_frames) if estimated_frames else max_frames
         frames = []
+        posed_frames = 0
+        pending_hits = [dict(hit) for hit in (hit_events or [])]
         stats: dict[str, dict] = defaultdict(lambda: {
             "frame_count": 0,
             "identity": "unknown",
@@ -203,14 +282,18 @@ class ActionAnalyzer:
             "body_sums": defaultdict(float),
         })
         decoded_idx = 0
+        analyzed = 0
         try:
             for frame in container.decode(video=0):
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.info("动作分析任务被取消")
+                    break
                 if decoded_idx < start_frame:
                     decoded_idx += 1
                     continue
                 if end_frame is not None and decoded_idx > end_frame:
                     break
-                if max_frames > 0 and len(frames) >= max_frames:
+                if max_frames > 0 and analyzed >= max_frames:
                     break
 
                 image = frame.to_ndarray(format="bgr24")
@@ -218,22 +301,15 @@ class ActionAnalyzer:
                 if self._mediapipe is not None and self._mediapipe.is_loaded:
                     persons = self._mediapipe.enrich_persons(image, persons)
                 persons = self.identity_tracker.update(image, persons, decoded_idx)
+                timestamp = round(decoded_idx / fps, 4)
+                frame_size = (int(image.shape[1]), int(image.shape[0]))
+                if persons:
+                    posed_frames += 1
+                if pending_hits:
+                    bind_hits_to_pose(pending_hits, timestamp, persons, frame_size)
 
-                serial_persons = []
-                for person in persons:
-                    item = {
-                        "track_id": person.get("track_id"),
-                        "identity": person.get("identity", "unknown"),
-                        "identity_confidence": person.get("identity_confidence", 0.0),
-                        "bbox": person.get("bbox"),
-                        "conf": person.get("conf", 0.0),
-                        "keypoints": person.get("keypoints"),
-                        "pose_landmarks": person.get("pose_landmarks"),
-                        "arm_angles": person.get("arm_angles", {}),
-                        "body_metrics": person.get("body_metrics", {}),
-                    }
-                    serial_persons.append(_json_value(item))
-
+                compact_people = [compact_person(person) for person in persons]
+                for item in compact_people:
                     track_id = item["track_id"]
                     current = stats[track_id]
                     current["frame_count"] += 1
@@ -246,13 +322,19 @@ class ActionAnalyzer:
                     for key, value in (item["body_metrics"] or {}).items():
                         current["body_sums"][key] += float(value)
 
-                frames.append({
-                    "frame": decoded_idx,
-                    "timestamp": round(decoded_idx / fps, 4),
-                    "persons": serial_persons,
-                })
+                if include_frames:
+                    frames.append({
+                        "frame": decoded_idx,
+                        "timestamp": timestamp,
+                        "persons": compact_people,
+                    })
                 decoded_idx += 1
+                analyzed += 1
+                if progress_callback and (analyzed == 1 or analyzed % 5 == 0):
+                    progress_callback(analyzed, estimated_frames)
         finally:
+            if progress_callback:
+                progress_callback(analyzed, estimated_frames)
             container.close()
 
         summaries = []
@@ -273,10 +355,14 @@ class ActionAnalyzer:
                 },
             })
 
-        return {
+        result = {
             "source": Path(video_path).name,
-            "frames_analyzed": len(frames),
+            "frames_analyzed": analyzed,
+            "posed_frames": posed_frames,
             "fps": round(fps, 3),
             "persons": summaries,
-            "frames": frames,
+            "hit_events": finalize_hit_events(pending_hits),
         }
+        if include_frames:
+            result["frames"] = frames
+        return result

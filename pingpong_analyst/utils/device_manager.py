@@ -3,8 +3,10 @@
 - Apple Silicon macOS: 优先使用 PyTorch MPS, 不可用时回退 CPU
 - 服务器(T4): 优先使用 TensorRT, 其次 CUDA
 """
+import csv
 import os
 import platform
+import subprocess
 from enum import Enum
 from dataclasses import dataclass
 from loguru import logger
@@ -78,6 +80,104 @@ class DeviceManager:
         if cls._info is None:
             return cls.detect("auto")
         return cls._info
+
+    @classmethod
+    def get_runtime_metrics(cls) -> dict:
+        """Return lightweight runtime metrics for the detected accelerator."""
+        info = cls.get_info()
+        base = {
+            "available": False,
+            "source": "unavailable",
+            "gpu_utilization_percent": None,
+            "memory_used_mb": None,
+            "memory_total_mb": info.total_memory_mb or None,
+            "temperature_c": None,
+            "power_draw_w": None,
+            "power_limit_w": None,
+            "message": "实时指标不可用",
+        }
+
+        if info.device_type in (DeviceType.CUDA, DeviceType.TENSORRT):
+            return cls._query_nvidia_smi(info, base)
+
+        if info.device_type == DeviceType.MPS:
+            try:
+                import torch
+
+                allocated = torch.mps.current_allocated_memory()
+                base.update(
+                    available=True,
+                    source="torch.mps",
+                    memory_used_mb=round(allocated / (1024 * 1024), 1),
+                    message="MPS 不提供 nvidia-smi 利用率和温度",
+                )
+            except Exception as exc:
+                logger.debug(f"MPS 运行时指标不可用: {exc}")
+            return base
+
+        base["message"] = "CPU 模式无 GPU 实时指标"
+        return base
+
+    @staticmethod
+    def _query_nvidia_smi(info: DeviceInfo, base: dict) -> dict:
+        """Query one GPU without invoking a shell or blocking the API loop."""
+        query = (
+            "index,name,utilization.gpu,memory.used,memory.total,"
+            "temperature.gpu,power.draw,power.limit"
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=" + query,
+                    "--format=csv,noheader,nounits",
+                    "-i",
+                    "0",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                base["message"] = "nvidia-smi 未返回数据"
+                return base
+
+            row = next(csv.reader([result.stdout.strip().splitlines()[0]]), [])
+            if len(row) < 8:
+                base["message"] = "nvidia-smi 数据格式异常"
+                return base
+
+            def number(value, integer=False):
+                value = value.strip()
+                if value in {"", "-", "N/A", "[N/A]"}:
+                    return None
+                try:
+                    parsed = float(value)
+                    return int(parsed) if integer else round(parsed, 1)
+                except ValueError:
+                    return None
+
+            base.update(
+                available=True,
+                source="nvidia-smi",
+                gpu_name=row[1].strip() or info.device_name,
+                gpu_utilization_percent=number(row[2], integer=True),
+                memory_used_mb=number(row[3], integer=True),
+                memory_total_mb=number(row[4], integer=True) or info.total_memory_mb or None,
+                temperature_c=number(row[5], integer=True),
+                power_draw_w=number(row[6]),
+                power_limit_w=number(row[7]),
+                message="",
+            )
+        except FileNotFoundError:
+            base["message"] = "未找到 nvidia-smi"
+        except subprocess.TimeoutExpired:
+            base["message"] = "nvidia-smi 查询超时"
+        except Exception as exc:
+            logger.debug(f"nvidia-smi 查询失败: {exc}")
+            base["message"] = "nvidia-smi 查询失败"
+        return base
 
     # ---------- 检测逻辑 ----------
 

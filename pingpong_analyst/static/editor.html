@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>精彩分段成片 · PingPong AI Analyst</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/editor.css">
+</head>
+<body class="editor-body">
+  <div class="editor-app" id="editorApp" data-stage="browse">
+    <header class="editor-header">
+      <a class="editor-back" href="/" aria-label="返回分析页面">返回分析</a>
+      <div class="editor-heading">
+        <div class="editor-kicker">SMART CUT / HIGHLIGHT EDITOR</div>
+        <h1>精彩分段成片</h1>
+        <span id="projectSource" class="editor-source">读取项目中</span>
+      </div>
+      <button class="save-status" id="editorSaveStatus" type="button">读取项目中</button>
+    </header>
+
+    <nav class="editor-steps" aria-label="成片流程">
+      <button class="editor-step editor-step--active" type="button" data-stage="browse">
+        <span class="editor-step__number">01</span>
+        <span>浏览分段</span>
+      </button>
+      <button class="editor-step" type="button" data-stage="arrange">
+        <span class="editor-step__number">02</span>
+        <span>编排成片</span>
+      </button>
+      <button class="editor-step" type="button" data-stage="render">
+        <span class="editor-step__number">03</span>
+        <span>渲染导出</span>
+      </button>
+    </nav>
+
+    <div class="editor-alert" id="editorError" role="alert" hidden>
+      <span id="editorErrorText"></span>
+      <button class="btn btn--icon" id="editorErrorRetry" type="button" hidden>重试</button>
+    </div>
+
+    <main class="editor-main">
+      <section class="editor-workspace" aria-label="分段编辑工作区">
+        <div class="editor-preview">
+          <div class="panel-heading">
+            <div>
+              <div class="panel-eyebrow">CURRENT SEGMENT</div>
+              <h2 id="previewHeading">分段预览</h2>
+            </div>
+            <span class="stage-note" id="stageNote">逐个查看识别到的精彩分段</span>
+          </div>
+
+          <div class="segment-player-wrap">
+            <video id="segmentPlayer" controls preload="metadata" playsinline></video>
+            <div class="player-empty" id="playerEmpty" hidden>暂无可播放的分段</div>
+          </div>
+
+          <div class="segment-meta" id="segmentMeta"></div>
+          <div class="trim-controls" id="trimControls"></div>
+          <div class="editor-actions" id="previewActions"></div>
+        </div>
+
+        <aside class="segment-panel" aria-label="精彩分段列表">
+          <div class="segment-panel__header">
+            <div>
+              <div class="panel-eyebrow">SEGMENTS</div>
+              <h2>分段列表</h2>
+            </div>
+            <span class="segment-count" id="segmentCount">0 段</span>
+          </div>
+          <div class="segment-summary" id="segmentSummary"></div>
+          <div class="segment-list" id="segmentList"></div>
+        </aside>
+      </section>
+
+      <section class="render-panel" id="renderPanel" aria-labelledby="renderPanelTitle" hidden>
+        <div class="render-panel__header">
+          <div>
+            <div class="panel-eyebrow">FINAL COMPOSITION</div>
+            <h2 id="renderPanelTitle">确认成片顺序</h2>
+          </div>
+          <button class="btn" id="renderBackBtn" type="button">返回编排</button>
+        </div>
+
+        <div class="composition-summary" id="compositionSummary"></div>
+        <div class="composition-list" id="compositionList"></div>
+
+        <div class="render-controls" id="renderControls">
+          <div class="render-controls__copy">
+            <strong>确认后将按当前顺序合并</strong>
+            <span>原始声音会保留，渲染期间编辑控件会暂时锁定。</span>
+          </div>
+          <button class="btn btn--primary" id="confirmRenderBtn" type="button">确认并渲染</button>
+        </div>
+
+        <div class="render-progress" id="renderProgressPanel" hidden>
+          <div class="render-progress__header">
+            <strong id="renderProgressMessage">准备渲染</strong>
+            <span id="renderProgressPercent">0%</span>
+          </div>
+          <div class="render-progress__track" aria-hidden="true">
+            <div class="render-progress__bar" id="renderProgressBar"></div>
+          </div>
+          <p class="render-progress__detail" id="renderProgressDetail">正在准备视频合并...</p>
+        </div>
+
+        <div class="render-failure" id="renderFailurePanel" hidden>
+          <strong>渲染失败</strong>
+          <span id="renderFailureText">请检查服务端 FFmpeg 配置后重试。</span>
+          <button class="btn" id="retryRenderBtn" type="button">重新渲染</button>
+        </div>
+
+        <div class="final-result" id="finalResultPanel" hidden>
+          <div class="final-result__heading">
+            <div>
+              <div class="panel-eyebrow">EXPORT READY</div>
+              <h3>成片已完成</h3>
+            </div>
+            <span class="final-result__badge">READY</span>
+          </div>
+          <video id="finalPlayer" controls preload="metadata" playsinline></video>
+          <div class="final-result__meta" id="finalResultMeta"></div>
+          <div class="final-result__actions">
+            <a class="btn btn--primary" id="downloadExportBtn" href="#" download>下载 MP4</a>
+            <button class="btn" id="returnEditBtn" type="button">返回编辑</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/auth-check.js"></script>
+  <script src="/static/editor.js"></script>
+</body>
+</html>

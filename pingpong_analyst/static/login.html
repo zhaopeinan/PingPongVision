@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 · PingPong AI Analyst</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+  <div class="login">
+    <div class="login__card">
+      <div class="login__brand">
+        <div class="login__logo"></div>
+        <div>
+          <div class="login__title">PingPong AI Analyst</div>
+          <div class="login__subtitle">请登录以继续</div>
+        </div>
+      </div>
+
+      <form class="login__form" id="loginForm">
+        <div class="login__field">
+          <label class="login__label" for="username">用户名</label>
+          <input class="login__input" type="text" id="username" name="username"
+                 autocomplete="username" autofocus required>
+        </div>
+        <div class="login__field">
+          <label class="login__label" for="password">密码</label>
+          <input class="login__input" type="password" id="password" name="password"
+                 autocomplete="current-password" required>
+        </div>
+        <div class="login__field">
+          <label class="login__label" for="captcha">验证码</label>
+          <div class="login__captcha-row">
+            <input class="login__input login__captcha-input" type="text" id="captcha"
+                   name="captcha" autocomplete="off" required>
+            <img class="login__captcha-img" id="captchaImg" alt="验证码" title="点击刷新">
+          </div>
+        </div>
+        <div class="login__error" id="loginError" hidden></div>
+        <button class="login__btn" type="submit" id="loginBtn">登录</button>
+      </form>
+
+      <div class="login__hint" id="loginHint" hidden>
+        默认管理员: <code>admin</code> / <code>admin123</code>
+      </div>
+    </div>
+  </div>
+  <script src="/static/login.js"></script>
+</body>
+</html>

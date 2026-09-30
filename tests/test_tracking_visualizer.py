@@ -28,6 +28,8 @@ def test_live_rally_count_includes_active_rally():
     _annotated, first = visualizer.process_frame(frame, fps=30.0)
     _annotated, second = visualizer.process_frame(frame, fps=30.0)
 
-    assert first["rally_count"] == 0
+    assert first["rally_count"] == 1
     assert second["rally_state"] == RallyState.RALLY_ACTIVE.value
     assert second["rally_count"] == 1
+    assert "ball_speed_kmh" in second
+    assert second["calibrated"] is False

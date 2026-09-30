@@ -49,6 +49,8 @@ models:
     weights: models/TrackNet_best.pt
     # TensorRT engine
     engine: models/TrackNetV3.engine
+    # 批量推理大小 (>1 时强制 PyTorch 后端 + GPU 预处理，跳过 TensorRT batch=1)
+    batch_size: 8
     # 公开 V3 权重的输入尺寸
     input_width: 512
     input_height: 288
@@ -70,6 +72,12 @@ models:
       y_min: 0.10
       y_max: 0.90
       outside_after_rally_frames: 30
+    # 连续静止的候选通常是白纸、灯泡等背景物，不作为乒乓球输出。
+    stationary_filter:
+      enabled: true
+      max_frames: 8
+      max_displacement: 2.0
+      rejection_radius: 12.0
     half: true
 
   # 用户标注微调产生的 TrackNet 版本；不会自动替换 base 权重。
@@ -90,10 +98,12 @@ models:
 analysis:
   # 帧采样间隔 (每N帧处理一次, 降低计算量)
   frame_stride: 1
+  # 批量推理大小 (GPU一次处理N帧, 显著提升利用率)
+  batch_size: 8
   # 回合检测
   rally:
     # 最小板数阈值 (>=N板才剪辑)
-    min_boards: 6
+    min_boards: 4
     # 球速阈值 (px/frame), 低于此视为静止
     ball_speed_threshold: 2.0
     # 折返点检测窗口大小
@@ -111,7 +121,11 @@ analysis:
     # 回合间隔超时 (帧数, 超过则判定回合结束)
     rally_timeout_frames: 60
     # 无跨区超时 (秒, 可由用户在分析入口覆盖, 范围 0.5-10.0)
-    no_crossing_timeout_seconds: 2.0
+    no_crossing_timeout_seconds: 4.0
+    # TrackNet 完成后是否对过网帧跑 YOLO，给击球事件补角度
+    enrich_hits: true
+    # 过网时刻往前看几帧找击球者姿态
+    hit_pose_lookback_frames: 2
   # 误检过滤
   filter:
     # 最小人体检测置信度
@@ -134,6 +148,13 @@ video:
   # 片段前后缓冲 (秒)
   clip_buffer_before: 0.5
   clip_buffer_after: 0.5
+
+# 精彩分段成片渲染配置
+composition:
+  output_dir: output/exports
+  encoder: auto
+  preset: fast
+  crf: 21
 
 # 日志配置
 logging:

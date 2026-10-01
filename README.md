@@ -101,8 +101,8 @@ Without TrackNet weights, rally analysis falls back to a **CV path** for develop
 ## Quick start
 
 ```bash
-git clone https://github.com/zhaopeinan/pingpongvision.git
-cd pingpongvision
+git clone https://github.com/zhaopeinan/PingPongVision.git
+cd PingPongVision
 
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -256,8 +256,8 @@ models/TrackNet_best.pt
 ## 快速开始
 
 ```bash
-git clone https://github.com/zhaopeinan/pingpongvision.git
-cd pingpongvision
+git clone https://github.com/zhaopeinan/PingPongVision.git
+cd PingPongVision
 
 python -m venv .venv
 source .venv/bin/activate
